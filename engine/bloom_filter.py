@@ -17,8 +17,13 @@ class BloomFilter:
     MAX_HASHES = 100
 
     def __init__(self, expected_elements: int = 1000, false_positive_rate: float = 0.01) -> None:
-        self.n = max(expected_elements, 1)
-        self.p = max(min(false_positive_rate, 0.99), 0.0001)
+        if not isinstance(expected_elements, int) or expected_elements <= 0:
+            raise ValueError(f"expected_elements must be a positive integer, got {expected_elements}")
+        if not (0.0 < false_positive_rate < 1.0):
+            raise ValueError(f"false_positive_rate must be in (0.0, 1.0), got {false_positive_rate}")
+
+        self.n = expected_elements
+        self.p = false_positive_rate
         self.num_bits = int(-(self.n * math.log(self.p)) / (math.log(2) ** 2))
         self.num_bits = max(self.num_bits, 8)
         self.num_hashes = int((self.num_bits / self.n) * math.log(2))
