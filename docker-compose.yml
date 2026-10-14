@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  stratakv:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: stratakv_service
+    ports:
+      - "8000:8000"
+    environment:
+      - STRATAKV_DATA_DIR=/app/data_store
+    volumes:
+      - stratakv_data:/app/data_store
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/engine/metrics')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  stratakv_data:
+    driver: local
