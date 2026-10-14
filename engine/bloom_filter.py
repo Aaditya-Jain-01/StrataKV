@@ -2,22 +2,31 @@ import math
 import zlib
 import struct
 import hashlib
+from typing import Iterator
+
+
+class CorruptedBloomFilterError(Exception):
+    """Raised when serialized Bloom filter binary data is invalid, truncated, or corrupt."""
+    pass
+
 
 class BloomFilter:
-    HEADER_FORMAT = "!II"
+    HEADER_FORMAT = "!II"  # num_bits (uint32), num_hashes (uint32)
     HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
+    MAX_BITS = 128 * 1024 * 1024  # 128 Mbits (~16 MB safety limit)
+    MAX_HASHES = 100
 
     def __init__(self, expected_elements: int = 1000, false_positive_rate: float = 0.01) -> None:
         self.n = max(expected_elements, 1)
-        self.p = false_positive_rate
+        self.p = max(min(false_positive_rate, 0.99), 0.0001)
         self.num_bits = int(-(self.n * math.log(self.p)) / (math.log(2) ** 2))
         self.num_bits = max(self.num_bits, 8)
         self.num_hashes = int((self.num_bits / self.n) * math.log(2))
-        self.num_hashes = max(self.num_hashes, 1)
+        self.num_hashes = max(min(self.num_hashes, self.MAX_HASHES), 1)
         self.num_bytes = (self.num_bits + 7) // 8
         self.bit_array = bytearray(self.num_bytes)
 
-    def _hashes(self, key: str):
+    def _hashes(self, key: str) -> Iterator[int]:
         key_bytes = key.encode("utf-8")
         h1 = zlib.crc32(key_bytes)
         h2 = int(hashlib.md5(key_bytes).hexdigest()[:8], 16)
@@ -44,12 +53,37 @@ class BloomFilter:
 
     @classmethod
     def from_bytes(cls, data: bytes) -> "BloomFilter":
+        if len(data) < cls.HEADER_SIZE:
+            raise CorruptedBloomFilterError(
+                f"Binary data truncated: expected at least {cls.HEADER_SIZE} bytes for header, got {len(data)}"
+            )
+
         num_bits, num_hashes = struct.unpack(cls.HEADER_FORMAT, data[:cls.HEADER_SIZE])
+
+        if num_bits < 8 or num_bits > cls.MAX_BITS:
+            raise CorruptedBloomFilterError(
+                f"Invalid num_bits value: {num_bits} (must be between 8 and {cls.MAX_BITS})"
+            )
+
+        if num_hashes < 1 or num_hashes > cls.MAX_HASHES:
+            raise CorruptedBloomFilterError(
+                f"Invalid num_hashes value: {num_hashes} (must be between 1 and {cls.MAX_HASHES})"
+            )
+
+        expected_payload_bytes = (num_bits + 7) // 8
+        actual_payload = data[cls.HEADER_SIZE:]
+
+        if len(actual_payload) != expected_payload_bytes:
+            raise CorruptedBloomFilterError(
+                f"Payload size mismatch: declared {expected_payload_bytes} bytes from header, "
+                f"found {len(actual_payload)} bytes"
+            )
+
         bf = cls.__new__(cls)
         bf.num_bits = num_bits
         bf.num_hashes = num_hashes
-        bf.num_bytes = (num_bits + 7) // 8
-        bf.bit_array = bytearray(data[cls.HEADER_SIZE:cls.HEADER_SIZE + bf.num_bytes])
+        bf.num_bytes = expected_payload_bytes
+        bf.bit_array = bytearray(actual_payload)
         bf.n = 0
         bf.p = 0.0
         return bf

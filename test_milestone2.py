@@ -38,16 +38,29 @@ def run_milestone2_tests() -> None:
     print("\n[TEST 3] Simulating corrupted disk write (torn-write checksum test)...")
     with open(WAL_PATH, "r+b") as f:
         f.seek(0, os.SEEK_END)
-        f.write(b"GARBAGE_TRAILING_CORRUPT_BYTES_XYZ")
+        f.write(b"GARBAGE_TRAILING_CORRUPT_BYTES_XYZ_123456789")
 
     corrupt_recovery_wal = WriteAheadLog(WAL_PATH)
     recovered_records = list(corrupt_recovery_wal.recover())
-    corrupt_recovery_wal.close()
-
     assert len(recovered_records) == 5, f"Expected 5 valid records, got {len(recovered_records)}"
     print("  Torn-write corruption halted cleanly via CRC32.")
+    print("  Corrupt suffix truncated to last valid offset.")
 
-    print("\n[TEST 4] Testing WAL reset on flush...")
+    print("\n[TEST 4] Appending new writes after recovery & verifying multi-restart durability...")
+    corrupt_recovery_wal.append("delta", "400")
+    corrupt_recovery_wal.append("echo", "500")
+    corrupt_recovery_wal.close()
+
+    second_restart_wal = WriteAheadLog(WAL_PATH)
+    all_reconstructed = list(second_restart_wal.recover())
+    second_restart_wal.close()
+
+    assert len(all_reconstructed) == 7, f"Expected 7 records after restart, got {len(all_reconstructed)}"
+    assert all_reconstructed[-2] == ("delta", "400"), "Post-corruption write 'delta' lost"
+    assert all_reconstructed[-1] == ("echo", "500"), "Post-corruption write 'echo' lost"
+    print("  Writes appended post-recovery are durable across subsequent restarts.")
+
+    print("\n[TEST 5] Testing WAL reset on flush...")
     wal_reset = WriteAheadLog(WAL_PATH)
     wal_reset.clear()
     assert len(list(wal_reset.recover())) == 0, "WAL not empty after clear"

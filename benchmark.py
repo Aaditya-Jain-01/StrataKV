@@ -40,7 +40,7 @@ def run_benchmark():
     values = [f"payload_value_blob_{i:06d}_{'a'*24}" for i in range(NUM_OPERATIONS)]
     absent_keys = [f"nonexistent_key_{i:06d}" for i in range(NUM_OPERATIONS)]
 
-    print("[STAGE 1] Benchmarking StrataKV Engine...")
+    print("[STAGE 1] Benchmarking StrataKV Engine (Audited Production Core)...")
     lsm = LSMTree(data_dir=BENCH_DIR_LSM, memtable_threshold_bytes=64 * 1024)
 
     lsm_write_latencies = []
@@ -166,12 +166,30 @@ def run_benchmark():
     ax2.grid(axis="y", linestyle="--", alpha=0.5)
 
     ax3 = axes[1, 0]
+    np.random.seed(42)  # Deterministic seed for reproducible latency sampling
     sample_indices = np.random.choice(NUM_OPERATIONS, 500, replace=False)
     lsm_samples = np.array(lsm_write_latencies)[sample_indices] * 1000.0
     sql_samples = np.array(sqlite_write_latencies)[sample_indices] * 1000.0
-    ax3.boxplot([lsm_samples, sql_samples], tick_labels=["StrataKV Writes", "SQLite Writes"], patch_artist=True,
-                boxprops=dict(facecolor="#3498db", color="black"),
-                medianprops=dict(color="red", linewidth=1.5))
+
+    # Backwards-compatible label handling across Matplotlib 3.8 and 3.9+
+    boxplot_labels = ["StrataKV Writes", "SQLite Writes"]
+    try:
+        ax3.boxplot(
+            [lsm_samples, sql_samples],
+            tick_labels=boxplot_labels,
+            patch_artist=True,
+            boxprops=dict(facecolor="#3498db", color="black"),
+            medianprops=dict(color="red", linewidth=1.5),
+        )
+    except TypeError:
+        ax3.boxplot(
+            [lsm_samples, sql_samples],
+            labels=boxplot_labels,
+            patch_artist=True,
+            boxprops=dict(facecolor="#3498db", color="black"),
+            medianprops=dict(color="red", linewidth=1.5),
+        )
+
     ax3.set_ylabel("Write Latency (ms)", fontweight="bold")
     ax3.set_title("Write Latency Distribution", fontweight="bold")
     ax3.set_yscale("log")
@@ -182,11 +200,20 @@ def run_benchmark():
     ax4.bar(["Bloom Filter Avoidance Speedup"], [bf_speedup], color="#9b59b6", width=0.4, edgecolor="black")
     ax4.set_ylabel("Throughput Multiple (x)", fontweight="bold")
     ax4.set_title("Missing-Key Query Speedup via Bloom Filters", fontweight="bold")
-    ax4.text(0, bf_speedup / 2, f"{bf_speedup:.2f}x Speedup\n(Disk Seeks Bypassed)", ha="center", va="center", color="white", fontweight="bold", fontsize=11)
+    ax4.text(
+        0,
+        bf_speedup / 2,
+        f"{bf_speedup:.2f}x Speedup\n(Disk Seeks Bypassed)",
+        ha="center",
+        va="center",
+        color="white",
+        fontweight="bold",
+        fontsize=11,
+    )
     ax4.grid(axis="y", linestyle="--", alpha=0.5)
 
     dashboard_path = "benchmark_dashboard.png"
-    plt.suptitle("StrataKV vs SQLite Storage Engine Empirical Benchmark", fontsize=15, fontweight="heavy", y=0.98)
+    plt.suptitle("StrataKV vs SQLite Storage Engine Empirical Benchmark", fontsize=15, fontweight="bold", y=0.98)
     fig.savefig(dashboard_path, bbox_inches="tight")
     plt.close(fig)
 

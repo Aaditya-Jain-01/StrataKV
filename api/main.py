@@ -1,4 +1,5 @@
 import os
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, status
 from engine.lsm_tree import LSMTree
@@ -19,7 +20,7 @@ async def lifespan(app: FastAPI):
     engine = LSMTree(data_dir=DATA_DIRECTORY)
     yield
     if engine:
-        engine.close()
+        await asyncio.to_thread(engine.close)
 
 app = FastAPI(
     title="StrataKV Storage Engine",
@@ -42,7 +43,7 @@ def get_engine() -> LSMTree:
 )
 async def put_record(key: str, payload: PutRecordRequest):
     storage = get_engine()
-    storage.put(key, payload.value)
+    await asyncio.to_thread(storage.put, key, payload.value)
     return OperationStatusResponse(status="success", key=key)
 
 @app.get(
@@ -52,7 +53,7 @@ async def put_record(key: str, payload: PutRecordRequest):
 )
 async def get_record(key: str):
     storage = get_engine()
-    value = storage.get(key)
+    value = await asyncio.to_thread(storage.get, key)
     if value is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -67,7 +68,7 @@ async def get_record(key: str):
 )
 async def delete_record(key: str):
     storage = get_engine()
-    storage.delete(key)
+    await asyncio.to_thread(storage.delete, key)
     return OperationStatusResponse(status="deleted", key=key)
 
 @app.post(
@@ -77,7 +78,7 @@ async def delete_record(key: str):
 )
 async def trigger_flush():
     storage = get_engine()
-    flushed_table = storage.flush()
+    flushed_table = await asyncio.to_thread(storage.flush)
     if flushed_table:
         return MessageResponse(message=f"Flushed to {flushed_table}")
     return MessageResponse(message="MemTable empty; nothing to flush")
@@ -89,7 +90,7 @@ async def trigger_flush():
 )
 async def trigger_compaction():
     storage = get_engine()
-    storage.compact()
+    await asyncio.to_thread(storage.compact)
     return MessageResponse(message="Compaction completed successfully")
 
 @app.get(
@@ -99,9 +100,10 @@ async def trigger_compaction():
 )
 async def get_metrics():
     storage = get_engine()
-    return EngineMetricsResponse(
-        memtable_size_bytes=storage.memtable.size_bytes,
-        memtable_entry_count=storage.memtable.entry_count,
-        sstable_count=len(storage.sstables),
-        active_sstables=[os.path.basename(s.base_path) for s in storage.sstables],
-    )
+    with storage._lock:
+        return EngineMetricsResponse(
+            memtable_size_bytes=storage.memtable.size_bytes,
+            memtable_entry_count=storage.memtable.entry_count,
+            sstable_count=len(storage.sstables),
+            active_sstables=[os.path.basename(s.base_path) for s in storage.sstables],
+        )
