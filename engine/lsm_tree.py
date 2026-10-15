@@ -1,5 +1,6 @@
 from __future__ import annotations
 import os
+import re
 import glob
 import json
 import threading
@@ -8,6 +9,8 @@ from engine.skip_list import SkipListMemTable, TOMBSTONE
 from engine.wal import WriteAheadLog
 from engine.sstable import SSTableWriter, SSTableReader, CorruptedSSTableError
 from engine.bloom_filter import BloomFilter, CorruptedBloomFilterError
+
+SSTABLE_NAME_PATTERN = re.compile(r"^sst_\d{6}(_compacted)?$")
 
 
 class MissingSSTableError(Exception):
@@ -42,7 +45,13 @@ class SSTableHandle:
 
 
 def _sync_directory(dir_path: str, strict: bool = False) -> None:
-    """Durably syncs directory metadata on POSIX filesystems. Safe no-op on Windows."""
+    """
+    Durably syncs directory metadata on POSIX filesystems.
+    
+    On Windows (NTFS), filesystem metadata updates are managed by the NTFS transactional log 
+    and FlushFileBuffers on individual file handles; directory handles do not support fsync (Errno 22).
+    On POSIX systems, directory syncing ensures directory entry links survive sudden power cuts.
+    """
     if os.name != "nt":
         try:
             fd = os.open(dir_path, os.O_RDONLY)
@@ -59,11 +68,12 @@ class LSMTree:
     """
     Production Log-Structured Merge-tree (LSM-Tree) engine.
     
-    Durability Guarantee:
-      - WAL: append + flush + fsync on every write operation.
-      - SSTable/Index/BloomFilter: written to .tmp files, flushed, fsynced, and atomically replaced.
+    Durability Guarantees:
+      - WAL: append + flush + os.fsync on every write operation.
+      - SSTable/Index/BloomFilter: written to .tmp files, flushed, fsynced, and atomically replaced via os.replace.
       - Manifest: written to manifest.json.tmp, fsynced, and atomically replaced via os.replace.
-      - Directory: synchronized via os.fsync on POSIX when strict_dir_sync=True.
+      - Directory: synchronized via os.fsync on POSIX when strict_dir_sync=True. On Windows, 
+        durability relies on NTFS journal guarantees and atomic file replacement semantics.
     """
 
     def __init__(
@@ -115,7 +125,7 @@ class LSMTree:
 
     def _load_manifest(self) -> Optional[Dict[str, Any]]:
         if not os.path.exists(self.manifest_path):
-            return None  # Genuinely uninitialized directory
+            return None  # Manifest absent; _recover_and_init determines if this is a fresh start
 
         try:
             with open(self.manifest_path, "r", encoding="utf-8") as f:
@@ -139,10 +149,11 @@ class LSMTree:
 
         seen_tables = set()
         for entry in sstables:
-            if not isinstance(entry, str) or not entry.strip():
-                raise CorruptedManifestError(f"Invalid SSTable entry in manifest: '{entry}' (must be non-empty string)")
-            if entry != os.path.basename(entry) or "/" in entry or "\\" in entry or ".." in entry:
-                raise CorruptedManifestError(f"Unsafe path or separator in SSTable manifest entry: '{entry}'")
+            if not isinstance(entry, str) or not SSTABLE_NAME_PATTERN.match(entry):
+                raise CorruptedManifestError(
+                    f"Invalid or unsafe SSTable entry in manifest: '{entry}' "
+                    f"(must match naming pattern '{SSTABLE_NAME_PATTERN.pattern}')"
+                )
             if entry in seen_tables:
                 raise CorruptedManifestError(f"Duplicate SSTable entry in manifest: '{entry}'")
             seen_tables.add(entry)
@@ -188,17 +199,16 @@ class LSMTree:
 
                 self._cleanup_orphaned_files(declared_bases)
             else:
-                # Fail-safe check: if manifest is missing but data files exist, halt immediately
+                # Fail-safe check: halt if manifest is missing from a populated storage directory
                 existing_ssts = glob.glob(os.path.join(self.data_dir, "sst_*"))
                 wal_has_content = os.path.exists(self.wal_path) and os.path.getsize(self.wal_path) > 0
 
                 if existing_ssts or wal_has_content:
                     raise CorruptedManifestError(
                         f"Missing manifest.json in non-empty storage directory '{self.data_dir}' "
-                        f"containing {len(existing_ssts)} SSTables and WAL data. Halting to prevent data loss."
+                        f"containing {len(existing_ssts)} SSTables and WAL data. Aborting to prevent silent data loss."
                     )
 
-                # Pure fresh initialization
                 self.next_file_seq = 1
                 self._save_manifest([], self.next_file_seq)
 

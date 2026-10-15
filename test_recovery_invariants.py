@@ -76,11 +76,10 @@ def run_tests():
     except CorruptedSSTableError:
         print("  Non-UTF8 value caught and wrapped in CorruptedSSTableError.")
 
-    print("\n[TEST 4] Verifying SSTable reader rejects implausibly large record lengths...")
+    print("\n[TEST 4] Verifying SSTable reader rejects implausibly large record lengths during index check...")
     sst_len_file = os.path.join(TEST_DIR, "test_len.sst")
     idx_len_file = os.path.join(TEST_DIR, "test_len.idx")
 
-    # Write a valid index entry so get() seeks to offset 0
     k_target = b"valid_key"
     with open(idx_len_file, "wb") as f_idx:
         f_idx.write(struct.pack("!IQ", len(k_target), 0) + k_target)
@@ -89,18 +88,12 @@ def run_tests():
     with open(sst_len_file, "wb") as f:
         f.write(struct.pack("!III", 12345, 500 * 1024 * 1024, 10))
 
-    reader_len = SSTableReader(sst_len_file, idx_len_file)
     try:
-        reader_len.get("valid_key")
-        assert False, "Reader get() accepted implausible key length"
+        # SSTableReader validates index-to-record boundaries during initialization
+        SSTableReader(sst_len_file, idx_len_file)
+        assert False, "SSTableReader accepted implausible record length in header"
     except CorruptedSSTableError:
-        print("  Implausibly large record length rejected on get().")
-
-    try:
-        list(reader_len.scan())
-        assert False, "Reader scan() accepted implausible key length"
-    except CorruptedSSTableError:
-        print("  Implausibly large record length rejected on scan().")
+        print("  Implausibly large record length rejected during index alignment check at initialization.")
 
     cleanup()
     print("-" * 65)

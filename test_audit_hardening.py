@@ -57,7 +57,7 @@ def run_audit_hardening_tests():
     print("  BloomFilter constructor validation verified.")
 
     print("\n[TEST 3] Testing monotonic sequence IDs (preventing timestamp collisions)...")
-    tree = LSMTree(data_dir=TEST_DIR, memtable_threshold_bytes=100)
+    tree = LSMTree(data_dir=TEST_DIR, memtable_threshold_bytes=1024)
     # Rapid burst writes and flushes
     for i in range(5):
         tree.put(f"burst:{i}", f"val_{i}")
@@ -75,7 +75,7 @@ def run_audit_hardening_tests():
     os.remove(os.path.join(TEST_DIR, "sst_000003.sst"))
 
     try:
-        LSMTree(data_dir=TEST_DIR)
+        LSMTree(data_dir=TEST_DIR, memtable_threshold_bytes=1024)
         assert False, "Engine silently started despite missing manifest-referenced SSTable!"
     except MissingSSTableError as e:
         print(f"  Missing referenced table caught with fail-fast exception:\n    {e}")
