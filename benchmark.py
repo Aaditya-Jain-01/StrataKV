@@ -69,111 +69,121 @@ def run_benchmark() -> None:
     last_sqlite_sample_latencies: list[float] = []
 
     for run_idx in range(1, REPETITIONS + 1):
-        print(f"\n[ITERATION {run_idx}/{REPETITIONS}] Executing benchmarks...")
+        # Alternate engine execution order to eliminate thermal and filesystem caching bias
+        stratakv_first = (run_idx % 2 == 1)
+        order_desc = "StrataKV -> SQLite" if stratakv_first else "SQLite -> StrataKV"
+        print(f"\n[ITERATION {run_idx}/{REPETITIONS}] Executing benchmarks ({order_desc})...")
         cleanup()
 
-        # ----------------- StrataKV -----------------
-        lsm = LSMTree(data_dir=BENCH_DIR_LSM, memtable_threshold_bytes=64 * 1024)
+        def bench_stratakv():
+            lsm = LSMTree(data_dir=BENCH_DIR_LSM, memtable_threshold_bytes=64 * 1024)
 
-        # 1. Writes
-        t0 = time.perf_counter()
-        w_lats = []
-        for k, v in zip(keys, values):
-            t_op = time.perf_counter()
-            lsm.put(k, v)
-            w_lats.append(time.perf_counter() - t_op)
-        w_total = time.perf_counter() - t0
-        w_ops = NUM_OPERATIONS / w_total
+            # 1. Writes
+            t0 = time.perf_counter()
+            w_lats = []
+            for k, v in zip(keys, values):
+                t_op = time.perf_counter()
+                lsm.put(k, v)
+                w_lats.append(time.perf_counter() - t_op)
+            w_total = time.perf_counter() - t0
+            w_ops = NUM_OPERATIONS / w_total
 
-        # Flush MemTable to disk before reading
-        lsm.flush()
+            # Flush MemTable to disk
+            lsm.flush()
 
-        # 2. Existing Reads with Invariant Assertions
-        t0 = time.perf_counter()
-        r_lats = []
-        for k in keys:
-            t_op = time.perf_counter()
-            res = lsm.get(k)
-            r_lats.append(time.perf_counter() - t_op)
-            if res != expected_kv[k]:
-                raise AssertionError(f"Correctness failure in StrataKV on key '{k}'")
-        r_total = time.perf_counter() - t0
-        r_ops = NUM_OPERATIONS / r_total
+            # 2. Point Reads with strict correctness invariant assertion
+            t0 = time.perf_counter()
+            r_lats = []
+            for k in keys:
+                t_op = time.perf_counter()
+                res = lsm.get(k)
+                r_lats.append(time.perf_counter() - t_op)
+                if res != expected_kv[k]:
+                    raise AssertionError(f"Correctness failure in StrataKV on key '{k}'")
+            r_total = time.perf_counter() - t0
+            r_ops = NUM_OPERATIONS / r_total
 
-        # 3. Missing-Key Reads
-        t0 = time.perf_counter()
-        m_lats = []
-        for k in absent_keys:
-            t_op = time.perf_counter()
-            res = lsm.get(k)
-            m_lats.append(time.perf_counter() - t_op)
-            if res is not None:
-                raise AssertionError(f"Correctness failure: non-existent key '{k}' returned non-None")
-        m_total = time.perf_counter() - t0
-        m_ops = NUM_OPERATIONS / m_total
+            # 3. Missing-Key Reads
+            t0 = time.perf_counter()
+            m_lats = []
+            for k in absent_keys:
+                t_op = time.perf_counter()
+                res = lsm.get(k)
+                m_lats.append(time.perf_counter() - t_op)
+                if res is not None:
+                    raise AssertionError(f"Correctness failure: non-existent key '{k}' returned non-None")
+            m_total = time.perf_counter() - t0
+            m_ops = NUM_OPERATIONS / m_total
 
-        lsm.close()
+            lsm.close()
+            return (w_ops, w_lats), (r_ops, r_lats), (m_ops, m_lats)
 
-        raw_results["stratakv"]["writes"].append({"ops_sec": w_ops, "metrics": calculate_metrics(w_lats)})
-        raw_results["stratakv"]["reads"].append({"ops_sec": r_ops, "metrics": calculate_metrics(r_lats)})
-        raw_results["stratakv"]["missing"].append({"ops_sec": m_ops, "metrics": calculate_metrics(m_lats)})
-
-        if run_idx == REPETITIONS:
-            last_stratakv_sample_latencies = w_lats
-
-        # ----------------- SQLite Baseline -----------------
-        conn = sqlite3.connect(BENCH_SQLITE_FILE)
-        cursor = conn.cursor()
-        cursor.execute("CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT)")
-        conn.commit()
-
-        # 1. Writes
-        t0 = time.perf_counter()
-        sql_w_lats = []
-        for k, v in zip(keys, values):
-            t_op = time.perf_counter()
-            cursor.execute("INSERT OR REPLACE INTO kv VALUES (?, ?)", (k, v))
+        def bench_sqlite():
+            conn = sqlite3.connect(BENCH_SQLITE_FILE)
+            cursor = conn.cursor()
+            cursor.execute("CREATE TABLE kv (key TEXT PRIMARY KEY, value TEXT)")
             conn.commit()
-            sql_w_lats.append(time.perf_counter() - t_op)
-        sql_w_total = time.perf_counter() - t0
-        sql_w_ops = NUM_OPERATIONS / sql_w_total
 
-        # 2. Existing Reads with Invariant Assertions
-        t0 = time.perf_counter()
-        sql_r_lats = []
-        for k in keys:
-            t_op = time.perf_counter()
-            cursor.execute("SELECT value FROM kv WHERE key = ?", (k,))
-            row = cursor.fetchone()
-            sql_r_lats.append(time.perf_counter() - t_op)
-            if row is None or row[0] != expected_kv[k]:
-                raise AssertionError(f"Correctness failure in SQLite on key '{k}'")
-        sql_r_total = time.perf_counter() - t0
-        sql_r_ops = NUM_OPERATIONS / sql_r_total
+            # 1. Writes
+            t0 = time.perf_counter()
+            sql_w_lats = []
+            for k, v in zip(keys, values):
+                t_op = time.perf_counter()
+                cursor.execute("INSERT OR REPLACE INTO kv VALUES (?, ?)", (k, v))
+                conn.commit()
+                sql_w_lats.append(time.perf_counter() - t_op)
+            sql_w_total = time.perf_counter() - t0
+            sql_w_ops = NUM_OPERATIONS / sql_w_total
 
-        # 3. Missing-Key Reads
-        t0 = time.perf_counter()
-        sql_m_lats = []
-        for k in absent_keys:
-            t_op = time.perf_counter()
-            cursor.execute("SELECT value FROM kv WHERE key = ?", (k,))
-            row = cursor.fetchone()
-            sql_m_lats.append(time.perf_counter() - t_op)
-            if row is not None:
-                raise AssertionError(f"Correctness failure: SQLite returned row for absent key '{k}'")
-        sql_m_total = time.perf_counter() - t0
-        sql_m_ops = NUM_OPERATIONS / sql_m_total
+            # 2. Point Reads with strict correctness invariant assertion
+            t0 = time.perf_counter()
+            sql_r_lats = []
+            for k in keys:
+                t_op = time.perf_counter()
+                cursor.execute("SELECT value FROM kv WHERE key = ?", (k,))
+                row = cursor.fetchone()
+                sql_r_lats.append(time.perf_counter() - t_op)
+                if row is None or row[0] != expected_kv[k]:
+                    raise AssertionError(f"Correctness failure in SQLite on key '{k}'")
+            sql_r_total = time.perf_counter() - t0
+            sql_r_ops = NUM_OPERATIONS / sql_r_total
 
-        conn.close()
+            # 3. Missing-Key Reads
+            t0 = time.perf_counter()
+            sql_m_lats = []
+            for k in absent_keys:
+                t_op = time.perf_counter()
+                cursor.execute("SELECT value FROM kv WHERE key = ?", (k,))
+                row = cursor.fetchone()
+                sql_m_lats.append(time.perf_counter() - t_op)
+                if row is not None:
+                    raise AssertionError(f"Correctness failure: SQLite returned row for absent key '{k}'")
+            sql_m_total = time.perf_counter() - t0
+            sql_m_ops = NUM_OPERATIONS / sql_m_total
 
-        raw_results["sqlite"]["writes"].append({"ops_sec": sql_w_ops, "metrics": calculate_metrics(sql_w_lats)})
-        raw_results["sqlite"]["reads"].append({"ops_sec": sql_r_ops, "metrics": calculate_metrics(sql_r_lats)})
-        raw_results["sqlite"]["missing"].append({"ops_sec": sql_m_ops, "metrics": calculate_metrics(sql_m_lats)})
+            conn.close()
+            return (sql_w_ops, sql_w_lats), (sql_r_ops, sql_r_lats), (sql_m_ops, sql_m_lats)
+
+        if stratakv_first:
+            skv_w, skv_r, skv_m = bench_stratakv()
+            sql_w, sql_r, sql_m = bench_sqlite()
+        else:
+            sql_w, sql_r, sql_m = bench_sqlite()
+            skv_w, skv_r, skv_m = bench_stratakv()
+
+        raw_results["stratakv"]["writes"].append({"ops_sec": skv_w[0], "metrics": calculate_metrics(skv_w[1])})
+        raw_results["stratakv"]["reads"].append({"ops_sec": skv_r[0], "metrics": calculate_metrics(skv_r[1])})
+        raw_results["stratakv"]["missing"].append({"ops_sec": skv_m[0], "metrics": calculate_metrics(skv_m[1])})
+
+        raw_results["sqlite"]["writes"].append({"ops_sec": sql_w[0], "metrics": calculate_metrics(sql_w[1])})
+        raw_results["sqlite"]["reads"].append({"ops_sec": sql_r[0], "metrics": calculate_metrics(sql_r[1])})
+        raw_results["sqlite"]["missing"].append({"ops_sec": sql_m[0], "metrics": calculate_metrics(sql_m[1])})
 
         if run_idx == REPETITIONS:
-            last_sqlite_sample_latencies = sql_w_lats
+            last_stratakv_sample_latencies = skv_w[1]
+            last_sqlite_sample_latencies = sql_w[1]
 
-    # Compute aggregate medians across independent repetitions
+    # Aggregate medians across runs
     med_skv_w_ops = float(np.median([r["ops_sec"] for r in raw_results["stratakv"]["writes"]]))
     med_skv_r_ops = float(np.median([r["ops_sec"] for r in raw_results["stratakv"]["reads"]]))
     med_skv_m_ops = float(np.median([r["ops_sec"] for r in raw_results["stratakv"]["missing"]]))
@@ -190,6 +200,11 @@ def run_benchmark() -> None:
     med_sql_r_p99 = float(np.median([r["metrics"]["p99_ms"] for r in raw_results["sqlite"]["reads"]]))
     med_sql_m_p99 = float(np.median([r["metrics"]["p99_ms"] for r in raw_results["sqlite"]["missing"]]))
 
+    # Strict denominator validation
+    if med_sql_m_ops <= 0:
+        raise ValueError(f"Invalid measured SQLite throughput: {med_sql_m_ops}")
+    throughput_ratio = med_skv_m_ops / med_sql_m_ops
+
     print("\n" + "=" * 70)
     print(" EMPIRICAL PERFORMANCE RESULTS SUMMARY (MEDIAN ACROSS RUNS) ")
     print("=" * 70)
@@ -199,7 +214,7 @@ def run_benchmark() -> None:
     print(f"{'Write P99 Latency (ms)':<25} | {med_skv_w_p99:<14.3f} | {med_sql_w_p99:<14.3f} | {med_sql_w_p99/med_skv_w_p99:.2f}x Lower Latency")
     print(f"{'Read Ops/sec (Hits)':<25} | {med_skv_r_ops:<14.2f} | {med_sql_r_ops:<14.2f} | {med_skv_r_ops/med_sql_r_ops:.2f}x Variance")
     print(f"{'Read P99 Latency (ms)':<25} | {med_skv_r_p99:<14.3f} | {med_sql_r_p99:<14.3f} | -")
-    print(f"{'Missing Key Ops/sec':<25} | {med_skv_m_ops:<14.2f} | {med_sql_m_ops:<14.2f} | {med_skv_m_ops/med_sql_m_ops:.2f}x Bloom Speedup")
+    print(f"{'Missing Key Ops/sec':<25} | {med_skv_m_ops:<14.2f} | {med_sql_m_ops:<14.2f} | {throughput_ratio:.2f}x Ratio")
     print(f"{'Missing P99 Latency (ms)':<25} | {med_skv_m_p99:<14.3f} | {med_sql_m_p99:<14.3f} | -")
     print("=" * 70)
 
@@ -212,7 +227,7 @@ def run_benchmark() -> None:
     fig, axes = plt.subplots(2, 2, figsize=(14, 10), dpi=300)
     plt.subplots_adjust(hspace=0.35, wspace=0.25)
 
-    # Subplot 1: Throughput Comparison
+    # Panel 1: Throughput Comparison
     ax1 = axes[0, 0]
     cats = ["Write Ops/Sec", "Read Ops/Sec", "Missing Key Ops/Sec"]
     lsm_thru = [med_skv_w_ops, med_skv_r_ops, med_skv_m_ops]
@@ -228,7 +243,7 @@ def run_benchmark() -> None:
     ax1.legend()
     ax1.grid(axis="y", linestyle="--", alpha=0.5)
 
-    # Subplot 2: Tail Latency (P99)
+    # Panel 2: Tail Latency (P99)
     ax2 = axes[0, 1]
     cats_p99 = ["Write P99", "Read P99", "Missing Key P99"]
     lsm_p99 = [med_skv_w_p99, med_skv_r_p99, med_skv_m_p99]
@@ -243,7 +258,7 @@ def run_benchmark() -> None:
     ax2.legend()
     ax2.grid(axis="y", linestyle="--", alpha=0.5)
 
-    # Subplot 3: Latency Distribution with Explicit Sample Annotation
+    # Panel 3: Latency Distribution with Explicit Sample Annotation
     ax3 = axes[1, 0]
     np.random.seed(42)
     sample_indices = np.random.choice(NUM_OPERATIONS, 500, replace=False)
@@ -273,16 +288,15 @@ def run_benchmark() -> None:
     ax3.set_yscale("log")
     ax3.grid(axis="y", linestyle="--", alpha=0.5)
 
-    # Subplot 4: Pruning Speedup without Hardware Overclaims
+    # Panel 4: Missing-Key Lookup Throughput Ratio (Corrected Label & Formula)
     ax4 = axes[1, 1]
-    bf_speedup = med_skv_m_ops / max(med_sql_m_ops, 1)
-    ax4.bar(["Bloom Filter Speedup"], [bf_speedup], color="#9b59b6", width=0.4, edgecolor="black")
+    ax4.bar(["Missing-Key Throughput Ratio"], [throughput_ratio], color="#9b59b6", width=0.4, edgecolor="black")
     ax4.set_ylabel("Throughput Multiple (x)", fontweight="bold")
-    ax4.set_title("Missing-Key Lookup Speedup via Bloom Filter", fontweight="bold")
+    ax4.set_title("Missing-Key Lookup Throughput Ratio", fontweight="bold")
     ax4.text(
         0,
-        bf_speedup / 2,
-        f"{bf_speedup:.2f}x Speedup\n(SSTable Lookups Pruned)",
+        throughput_ratio / 2,
+        f"{throughput_ratio:.2f}x vs SQLite\n(Pruned SSTable Lookups)",
         ha="center",
         va="center",
         color="white",

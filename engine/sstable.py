@@ -13,6 +13,8 @@ class CorruptedSSTableError(Exception):
 class SSTableWriter:
     HEADER_FORMAT = "!III"  # CRC32 (uint32), Key Length (uint32), Value Length (uint32)
     HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
+    MAX_KEY_LEN = 64 * 1024             # 64 KB limit
+    MAX_VAL_LEN = 64 * 1024 * 1024      # 64 MB limit
 
     @staticmethod
     def write(
@@ -32,6 +34,12 @@ class SSTableWriter:
 
                 key_bytes = key.encode("utf-8")
                 val_bytes = val.encode("utf-8")
+
+                if len(key_bytes) > SSTableWriter.MAX_KEY_LEN:
+                    raise ValueError(f"Key exceeds maximum supported size: {len(key_bytes)} bytes")
+                if len(val_bytes) > SSTableWriter.MAX_VAL_LEN:
+                    raise ValueError(f"Value exceeds maximum supported size: {len(val_bytes)} bytes")
+
                 payload = key_bytes + val_bytes
                 checksum = zlib.crc32(payload)
                 header = struct.pack(
@@ -57,6 +65,8 @@ class SSTableReader:
     HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
     INDEX_FORMAT = "!IQ"
     INDEX_HEADER_SIZE = struct.calcsize(INDEX_FORMAT)
+    MAX_KEY_LEN = 64 * 1024
+    MAX_VAL_LEN = 64 * 1024 * 1024
 
     def __init__(self, sst_path: str, idx_path: str) -> None:
         self.sst_path = sst_path
@@ -90,6 +100,9 @@ class SSTableReader:
                     )
 
                 k_len, offset = struct.unpack(self.INDEX_FORMAT, h)
+                if k_len > self.MAX_KEY_LEN:
+                    raise CorruptedSSTableError(f"Implausibly large index key length: {k_len} bytes")
+
                 k_bytes = f.read(k_len)
                 if len(k_bytes) < k_len:
                     raise CorruptedSSTableError(
@@ -162,6 +175,11 @@ class SSTableReader:
                     )
 
                 checksum, k_len, v_len = struct.unpack(self.HEADER_FORMAT, h)
+                if k_len > self.MAX_KEY_LEN or v_len > self.MAX_VAL_LEN:
+                    raise CorruptedSSTableError(
+                        f"Implausibly large record length (key: {k_len}, val: {v_len}) at {curr_offset}"
+                    )
+
                 payload = f.read(k_len + v_len)
                 if len(payload) < (k_len + v_len):
                     raise CorruptedSSTableError(
@@ -176,10 +194,14 @@ class SSTableReader:
                 try:
                     curr_key = payload[:k_len].decode("utf-8")
                 except UnicodeDecodeError as e:
-                    raise CorruptedSSTableError(f"Corrupt key UTF-8 sequence: {e}") from e
+                    raise CorruptedSSTableError(f"Corrupt key UTF-8 sequence at {curr_offset}: {e}") from e
 
                 if curr_key == key:
-                    return payload[k_len:].decode("utf-8")
+                    try:
+                        return payload[k_len:].decode("utf-8")
+                    except UnicodeDecodeError as e:
+                        raise CorruptedSSTableError(f"Corrupt value UTF-8 sequence at {curr_offset}: {e}") from e
+
                 if curr_key > key:
                     break
 
@@ -205,6 +227,11 @@ class SSTableReader:
                     )
 
                 checksum, k_len, v_len = struct.unpack(self.HEADER_FORMAT, h)
+                if k_len > self.MAX_KEY_LEN or v_len > self.MAX_VAL_LEN:
+                    raise CorruptedSSTableError(
+                        f"Implausibly large record length (key: {k_len}, val: {v_len}) at {curr_offset}"
+                    )
+
                 payload = f.read(k_len + v_len)
                 if len(payload) < (k_len + v_len):
                     raise CorruptedSSTableError(
@@ -216,4 +243,10 @@ class SSTableReader:
                         f"CRC32 mismatch at byte {curr_offset} in {self.sst_path}"
                     )
 
-                yield payload[:k_len].decode("utf-8"), payload[k_len:].decode("utf-8")
+                try:
+                    key = payload[:k_len].decode("utf-8")
+                    value = payload[k_len:].decode("utf-8")
+                except UnicodeDecodeError as e:
+                    raise CorruptedSSTableError(f"Corrupt UTF-8 sequence at {curr_offset}: {e}") from e
+
+                yield key, value
