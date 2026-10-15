@@ -56,11 +56,8 @@ def add_throughput_labels(ax) -> None:
 
 def add_p99_labels(ax, num_categories: int = 4) -> None:
     """
-    Offsets labels using both horizontal and tiered vertical positions.
-    StrataKV (green, left) shifts left (-3pt) at standard elevation (+4pt).
-    SQLite (red, right) shifts right (+3pt) with tiered elevation:
-      - Uncompacted Read: +13pt
-      - Compacted Read:   +25pt (prevents collision between identical heights)
+    Applies decoupled horizontal and tiered vertical label placement
+    so adjacent bars on the log scale never touch or overlap.
     """
     for idx, rect in enumerate(ax.patches):
         height = rect.get_height()
@@ -71,16 +68,18 @@ def add_p99_labels(ax, num_categories: int = 4) -> None:
         cat_idx = idx % num_categories
 
         if not is_sqlite:
-            x_off = -3
+            # StrataKV (green, left)
+            x_off = -4
             y_off = 4
         else:
-            x_off = 3
-            if cat_idx == 1:       # Read (Uncomp)
-                y_off = 13
-            elif cat_idx == 2:     # Read (Comp)
-                y_off = 25
-            elif cat_idx == 0:     # Write P99
+            # SQLite (red, right) - tiered elevations
+            x_off = 4
+            if cat_idx == 0:       # Write P99
                 y_off = 6
+            elif cat_idx == 1:     # Read Uncompacted
+                y_off = 14
+            elif cat_idx == 2:     # Read Compacted (stacked higher to clear adjacent bar)
+                y_off = 28
             else:                  # Missing P99
                 y_off = 8
 
@@ -91,12 +90,12 @@ def add_p99_labels(ax, num_categories: int = 4) -> None:
             textcoords="offset points",
             ha="center",
             va="bottom",
-            fontsize=7.0,
+            fontsize=6.8,
             fontweight="bold",
         )
 
 
-def render_dashboard(raw_results: dict, all_skv_writes: list[float], all_sql_writes: list[float]) -> None:
+def render_dashboard(raw_results: dict, lsm_samples_ms: list[float], sql_samples_ms: list[float]) -> None:
     med_skv_w_ops = float(np.median([r["ops_sec"] for r in raw_results["stratakv"]["writes"]]))
     med_skv_ru_ops = float(np.median([r["ops_sec"] for r in raw_results["stratakv"]["reads_uncompacted"]]))
     med_skv_rc_ops = float(np.median([r["ops_sec"] for r in raw_results["stratakv"]["reads_compacted"]]))
@@ -157,22 +156,17 @@ def render_dashboard(raw_results: dict, all_skv_writes: list[float], all_sql_wri
     ax2.set_xticks(x)
     ax2.set_xticklabels(cats_p99, fontweight="bold", fontsize=8)
     ax2.set_yscale("log")
-    ax2.set_ylim(bottom=0.001, top=70.0)
+    ax2.set_ylim(bottom=0.001, top=100.0)
     ax2.legend()
     ax2.grid(axis="y", linestyle="--", alpha=0.5)
     add_p99_labels(ax2, num_categories=len(cats_p99))
 
-    # Panel 3: Latency Distribution (Pooled across all 5 runs)
+    # Panel 3: Latency Distribution (Using exact recorded observations)
     ax3 = axes[1, 0]
-    np.random.seed(42)
-    sample_indices = np.random.choice(len(all_skv_writes), 500, replace=False)
-    lsm_samples = np.array(all_skv_writes)[sample_indices] * 1000.0
-    sql_samples = np.array(all_sql_writes)[sample_indices] * 1000.0
-
     boxplot_labels = ["StrataKV Writes", "SQLite Writes"]
     try:
         ax3.boxplot(
-            [lsm_samples, sql_samples],
+            [lsm_samples_ms, sql_samples_ms],
             tick_labels=boxplot_labels,
             patch_artist=True,
             boxprops=dict(facecolor="#3498db", color="black"),
@@ -180,7 +174,7 @@ def render_dashboard(raw_results: dict, all_skv_writes: list[float], all_sql_wri
         )
     except TypeError:
         ax3.boxplot(
-            [lsm_samples, sql_samples],
+            [lsm_samples_ms, sql_samples_ms],
             labels=boxplot_labels,
             patch_artist=True,
             boxprops=dict(facecolor="#3498db", color="black"),
@@ -200,7 +194,7 @@ def render_dashboard(raw_results: dict, all_skv_writes: list[float], all_sql_wri
     ax4.text(
         0,
         throughput_ratio / 2,
-        f"{throughput_ratio:.2f}x vs SQLite\n(Compacted DB, Pruned SSTable Lookups)",
+        f"{throughput_ratio:.2f}x vs SQLite\n(Compacted DB Missing-Key Workload)",
         ha="center",
         va="center",
         color="white",
@@ -416,18 +410,22 @@ def run_benchmark() -> None:
         all_stratakv_writes.extend(skv_w[1])
         all_sqlite_writes.extend(sql_w[1])
 
+    # Workload rate arrays across runs
     skv_w_rates = [r["ops_sec"] for r in raw_results["stratakv"]["writes"]]
     sql_w_rates = [r["ops_sec"] for r in raw_results["sqlite"]["writes"]]
+    skv_ru_rates = [r["ops_sec"] for r in raw_results["stratakv"]["reads_uncompacted"]]
+    skv_rc_rates = [r["ops_sec"] for r in raw_results["stratakv"]["reads_compacted"]]
+    sql_r_rates = [r["ops_sec"] for r in raw_results["sqlite"]["reads"]]
     skv_m_rates = [r["ops_sec"] for r in raw_results["stratakv"]["missing_compacted"]]
     sql_m_rates = [r["ops_sec"] for r in raw_results["sqlite"]["missing"]]
 
     med_skv_w_ops = float(np.median(skv_w_rates))
-    med_skv_ru_ops = float(np.median([r["ops_sec"] for r in raw_results["stratakv"]["reads_uncompacted"]]))
-    med_skv_rc_ops = float(np.median([r["ops_sec"] for r in raw_results["stratakv"]["reads_compacted"]]))
+    med_skv_ru_ops = float(np.median(skv_ru_rates))
+    med_skv_rc_ops = float(np.median(skv_rc_rates))
     med_skv_m_ops = float(np.median(skv_m_rates))
 
     med_sql_w_ops = float(np.median(sql_w_rates))
-    med_sql_r_ops = float(np.median([r["ops_sec"] for r in raw_results["sqlite"]["reads"]]))
+    med_sql_r_ops = float(np.median(sql_r_rates))
     med_sql_m_ops = float(np.median(sql_m_rates))
 
     med_skv_w_p99 = float(np.median([r["metrics"]["p99_ms"] for r in raw_results["stratakv"]["writes"]]))
@@ -441,27 +439,51 @@ def run_benchmark() -> None:
 
     throughput_ratio = med_skv_m_ops / med_sql_m_ops
 
-    print("\n" + "=" * 78)
-    print(" EMPIRICAL PERFORMANCE RESULTS SUMMARY (MEDIANS ACROSS 5 RUNS) ")
-    print("=" * 78)
-    print(f"{'Workload Scenario':<30} | {'StrataKV':<13} | {'SQLite':<13} | {'Multiple':<14}")
-    print("-" * 78)
-    print(f"{'Write Ops/sec':<30} | {med_skv_w_ops:<13.2f} | {med_sql_w_ops:<13.2f} | {med_skv_w_ops/med_sql_w_ops:.2f}x Throughput")
-    print(f"{'Write P99 Latency (ms)':<30} | {med_skv_w_p99:<13.3f} | {med_sql_w_p99:<13.3f} | {med_sql_w_p99/med_skv_w_p99:.2f}x Lower Latency")
-    print(f"{'Read (Uncompacted Multi-SST)':<30} | {med_skv_ru_ops:<13.2f} | {med_sql_r_ops:<13.2f} | {med_skv_ru_ops/med_sql_r_ops:.2f}x Variance")
-    print(f"{'Read (Compacted Single-SST)':<30} | {med_skv_rc_ops:<13.2f} | {med_sql_r_ops:<13.2f} | {med_skv_rc_ops/med_sql_r_ops:.2f}x Variance")
-    print(f"{'Read P99 (Compacted, ms)':<30} | {med_skv_rc_p99:<13.3f} | {med_sql_r_p99:<13.3f} | -")
-    print(f"{'Missing-Key Ops/sec (Compacted)':<30} | {med_skv_m_ops:<13.2f} | {med_sql_m_ops:<13.2f} | {throughput_ratio:.2f}x Ratio")
-    print(f"{'Missing-Key P99 (Compacted, ms)':<30} | {med_skv_m_p99:<13.3f} | {med_sql_m_p99:<13.3f} | -")
-    print("=" * 78)
-    print(f"Variability (Write Ops/sec StdDev)      : StrataKV ±{np.std(skv_w_rates):.1f} | SQLite ±{np.std(sql_w_rates):.1f}")
-    print(f"Variability (Missing-Key Ops/sec StdDev): StrataKV ±{np.std(skv_m_rates):.1f} | SQLite ±{np.std(sql_m_rates):.1f}")
+    # Draw deterministic 500-op sample from pooled writes (50,000 ops total)
+    np.random.seed(42)
+    sample_indices = np.random.choice(len(all_stratakv_writes), 500, replace=False)
+    lsm_samples_ms = (np.array(all_stratakv_writes)[sample_indices] * 1000.0).tolist()
+    sql_samples_ms = (np.array(all_sqlite_writes)[sample_indices] * 1000.0).tolist()
+
+    # Save authentic latency sample vectors directly in JSON
+    raw_results["sample_latencies"] = {
+        "stratakv_writes_ms": lsm_samples_ms,
+        "sqlite_writes_ms": sql_samples_ms,
+        "sample_size": 500,
+        "sampling_method": "Deterministic random choice (seed=42) pooled across all 5 runs (50,000 ops total)",
+    }
+
+    # Save summary variability metrics
+    raw_results["variability_stddev"] = {
+        "write_ops_sec": {"stratakv": float(np.std(skv_w_rates)), "sqlite": float(np.std(sql_w_rates))},
+        "read_uncompacted_ops_sec": {"stratakv": float(np.std(skv_ru_rates)), "sqlite": float(np.std(sql_r_rates))},
+        "read_compacted_ops_sec": {"stratakv": float(np.std(skv_rc_rates)), "sqlite": float(np.std(sql_r_rates))},
+        "missing_ops_sec": {"stratakv": float(np.std(skv_m_rates)), "sqlite": float(np.std(sql_m_rates))},
+    }
+
+    print("\n" + "=" * 80)
+    print(" EMPIRICAL PERFORMANCE RESULTS SUMMARY (MEDIANS & VARIABILITY ACROSS 5 RUNS) ")
+    print("=" * 80)
+    print(f"{'Workload Scenario':<32} | {'StrataKV':<13} | {'SQLite':<13} | {'Multiple':<14}")
+    print("-" * 80)
+    print(f"{'Write Ops/sec':<32} | {med_skv_w_ops:<13.2f} | {med_sql_w_ops:<13.2f} | {med_skv_w_ops/med_sql_w_ops:.2f}x Throughput")
+    print(f"{'Write P99 Latency (ms)':<32} | {med_skv_w_p99:<13.3f} | {med_sql_w_p99:<13.3f} | {med_sql_w_p99/med_skv_w_p99:.2f}x Lower Latency")
+    print(f"{'Read (Uncompacted Multi-SST)':<32} | {med_skv_ru_ops:<13.2f} | {med_sql_r_ops:<13.2f} | {med_skv_ru_ops/med_sql_r_ops:.2f}x Variance")
+    print(f"{'Read (Compacted Single-SST)':<32} | {med_skv_rc_ops:<13.2f} | {med_sql_r_ops:<13.2f} | {med_skv_rc_ops/med_sql_r_ops:.2f}x Variance")
+    print(f"{'Read P99 (Compacted, ms)':<32} | {med_skv_rc_p99:<13.3f} | {med_sql_r_p99:<13.3f} | -")
+    print(f"{'Missing-Key Ops/sec (Compacted)':<32} | {med_skv_m_ops:<13.2f} | {med_sql_m_ops:<13.2f} | {throughput_ratio:.2f}x Ratio")
+    print(f"{'Missing-Key P99 (Compacted, ms)':<32} | {med_skv_m_p99:<13.3f} | {med_sql_m_p99:<13.3f} | -")
+    print("=" * 80)
+    print(f"Variability (Write Ops/sec StdDev)         : StrataKV ±{np.std(skv_w_rates):.1f} | SQLite ±{np.std(sql_w_rates):.1f}")
+    print(f"Variability (Read Uncompacted Ops/sec)     : StrataKV ±{np.std(skv_ru_rates):.1f} | SQLite ±{np.std(sql_r_rates):.1f}")
+    print(f"Variability (Read Compacted Ops/sec)       : StrataKV ±{np.std(skv_rc_rates):.1f} | SQLite ±{np.std(sql_r_rates):.1f}")
+    print(f"Variability (Missing-Key Ops/sec StdDev)   : StrataKV ±{np.std(skv_m_rates):.1f} | SQLite ±{np.std(sql_m_rates):.1f}")
 
     with open("benchmark_results.json", "w", encoding="utf-8") as f:
         json.dump(raw_results, f, indent=2)
     print("\n[STATUS] Raw telemetry data saved to: benchmark_results.json")
 
-    render_dashboard(raw_results, all_stratakv_writes, all_sqlite_writes)
+    render_dashboard(raw_results, lsm_samples_ms, sql_samples_ms)
     cleanup()
 
 
@@ -473,14 +495,13 @@ if __name__ == "__main__":
         with open("benchmark_results.json", "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        np.random.seed(42)
-        skv_writes = []
-        sql_writes = []
-        for w in data["stratakv"]["writes"]:
-            skv_writes.extend(list(np.random.normal(w["metrics"]["mean_ms"] / 1000.0, max(w["metrics"]["std_ms"] / 1000.0, 1e-5), 10000)))
-        for w in data["sqlite"]["writes"]:
-            sql_writes.extend(list(np.random.normal(w["metrics"]["mean_ms"] / 1000.0, max(w["metrics"]["std_ms"] / 1000.0, 1e-5), 10000)))
+        if "sample_latencies" in data:
+            skv_samples = data["sample_latencies"]["stratakv_writes_ms"]
+            sql_samples = data["sample_latencies"]["sqlite_writes_ms"]
+        else:
+            print("[ERROR] JSON lacks authentic sample_latencies vector. Run full benchmark.")
+            sys.exit(1)
 
-        render_dashboard(data, skv_writes, sql_writes)
+        render_dashboard(data, skv_samples, sql_samples)
     else:
         run_benchmark()
