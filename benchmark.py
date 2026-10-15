@@ -43,7 +43,6 @@ def add_bar_labels(ax, fmt: str = "{:,.0f}", stagger: bool = False) -> None:
     for idx, rect in enumerate(ax.patches):
         height = rect.get_height()
         if height > 0:
-            # Stagger vertical offsets for adjacent bars on crowded log charts
             y_offset = (13 if idx % 2 == 1 else 3) if stagger else 4
             ax.annotate(
                 fmt.format(height),
@@ -63,7 +62,7 @@ def run_benchmark() -> None:
     print(f" STRATAKV VS SQLITE: STATISTICAL BENCHMARK ({REPETITIONS} RUNS x {NUM_OPERATIONS:,} OPS) ")
     print("-" * 78)
 
-    # Directly query default SQLite PRAGMAs from active engine connection
+    # Query active SQLite PRAGMAs directly from the SQLite engine
     conn_probe = sqlite3.connect(BENCH_SQLITE_FILE)
     c_probe = conn_probe.cursor()
     c_probe.execute("PRAGMA journal_mode;")
@@ -78,6 +77,7 @@ def run_benchmark() -> None:
     absent_keys = [f"nonexistent_key_{i:06d}" for i in range(NUM_OPERATIONS)]
     expected_kv = dict(zip(keys, values))
 
+    # Standardized flat metadata schema guaranteeing 1:1 match with JSON output
     raw_results = {
         "metadata": {
             "platform": platform.platform(),
@@ -99,7 +99,7 @@ def run_benchmark() -> None:
         "sqlite": {"writes": [], "reads": [], "missing": []},
     }
 
-    # Accumulate all write latencies across all 5 runs for pooled box plot
+    # True pooling across all 5 runs (total 50,000 operations per engine)
     all_stratakv_write_latencies: list[float] = []
     all_sqlite_write_latencies: list[float] = []
 
@@ -226,6 +226,7 @@ def run_benchmark() -> None:
         raw_results["sqlite"]["reads"].append({"ops_sec": sql_r[0], "metrics": calculate_metrics(sql_r[1])})
         raw_results["sqlite"]["missing"].append({"ops_sec": sql_m[0], "metrics": calculate_metrics(sql_m[1])})
 
+        # Accumulate write latencies across every single repetition
         all_stratakv_write_latencies.extend(skv_w[1])
         all_sqlite_write_latencies.extend(sql_w[1])
 
@@ -313,13 +314,12 @@ def run_benchmark() -> None:
     ax2.set_yscale("log")
     ax2.legend()
     ax2.grid(axis="y", linestyle="--", alpha=0.5)
-    # Stagger labels vertically on log scale so adjacent bars do not overlap
     add_bar_labels(ax2, fmt="{:.3f} ms", stagger=True)
 
-    # Panel 3: Latency Distribution (Pooled across all 5 runs)
+    # Panel 3: Latency Distribution (Truly pooled across all 5 runs)
     ax3 = axes[1, 0]
     np.random.seed(42)
-    # Pool all 50,000 writes across 5 runs and sample 500 points deterministically
+    # Take a reproducible sample of 500 operations from all 50,000 pooled writes
     sample_indices = np.random.choice(len(all_stratakv_write_latencies), 500, replace=False)
     lsm_samples = np.array(all_stratakv_write_latencies)[sample_indices] * 1000.0
     sql_samples = np.array(all_sqlite_write_latencies)[sample_indices] * 1000.0
