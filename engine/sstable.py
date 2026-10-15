@@ -131,6 +131,47 @@ class SSTableReader:
                 prev_key = k_str
                 prev_offset = offset
 
+        # Strict alignment verification: each index offset must point to a valid record matching k_str
+        if os.path.exists(self.sst_path) and self.sparse_index:
+            with open(self.sst_path, "rb") as f_sst:
+                for idx_key, idx_offset in self.sparse_index:
+                    f_sst.seek(idx_offset)
+                    h = f_sst.read(self.HEADER_SIZE)
+                    if len(h) < self.HEADER_SIZE:
+                        raise CorruptedSSTableError(
+                            f"Index offset {idx_offset} points to truncated record header in {self.sst_path}"
+                        )
+
+                    checksum, rec_k_len, rec_v_len = struct.unpack(self.HEADER_FORMAT, h)
+                    if rec_k_len > self.MAX_KEY_LEN or rec_v_len > self.MAX_VAL_LEN:
+                        raise CorruptedSSTableError(
+                            f"Index offset {idx_offset} points to invalid record length in {self.sst_path}"
+                        )
+
+                    rec_payload = f_sst.read(rec_k_len + rec_v_len)
+                    if len(rec_payload) < (rec_k_len + rec_v_len):
+                        raise CorruptedSSTableError(
+                            f"Index offset {idx_offset} points to truncated payload in {self.sst_path}"
+                        )
+
+                    if zlib.crc32(rec_payload) != checksum:
+                        raise CorruptedSSTableError(
+                            f"Index offset {idx_offset} points to corrupt record (CRC mismatch) in {self.sst_path}"
+                        )
+
+                    try:
+                        actual_key = rec_payload[:rec_k_len].decode("utf-8")
+                    except UnicodeDecodeError as e:
+                        raise CorruptedSSTableError(
+                            f"Index offset {idx_offset} points to corrupt UTF-8 key: {e}"
+                        ) from e
+
+                    if actual_key != idx_key:
+                        raise CorruptedSSTableError(
+                            f"Index alignment mismatch at offset {idx_offset}: index references key '{idx_key}', "
+                            f"but SSTable record contains '{actual_key}'"
+                        )
+
     def get(self, key: str) -> Optional[str]:
         if not self.sparse_index or not os.path.exists(self.sst_path):
             return None

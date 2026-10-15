@@ -38,11 +38,29 @@ def calculate_metrics(latencies_sec: list[float]) -> dict[str, float]:
     }
 
 
+def add_bar_labels(ax, fmt: str = "{:,.0f}", rotation: int = 0) -> None:
+    """Adds exact numerical text labels directly above plot bars."""
+    for rect in ax.patches:
+        height = rect.get_height()
+        if height > 0:
+            ax.annotate(
+                fmt.format(height),
+                xy=(rect.get_x() + rect.get_width() / 2, height),
+                xytext=(0, 4),
+                textcoords="offset points",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+                fontweight="bold",
+                rotation=rotation,
+            )
+
+
 def run_benchmark() -> None:
     cleanup()
-    print("-" * 70)
-    print(f" STRATAKV VS SQLITE: SCIENTIFIC BENCHMARK ({REPETITIONS} RUNS x {NUM_OPERATIONS:,} OPS) ")
-    print("-" * 70)
+    print("-" * 75)
+    print(f" STRATAKV VS SQLITE: COMPREHENSIVE BENCHMARK ({REPETITIONS} RUNS x {NUM_OPERATIONS:,} OPS) ")
+    print("-" * 75)
 
     keys = [f"usr_{i:06d}" for i in range(NUM_OPERATIONS)]
     values = [f"payload_value_blob_{i:06d}_{'a'*24}" for i in range(NUM_OPERATIONS)]
@@ -61,7 +79,7 @@ def run_benchmark() -> None:
             "repetitions": REPETITIONS,
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         },
-        "stratakv": {"writes": [], "reads": [], "missing": []},
+        "stratakv": {"writes": [], "reads_uncompacted": [], "reads_compacted": [], "missing": []},
         "sqlite": {"writes": [], "reads": [], "missing": []},
     }
 
@@ -69,7 +87,6 @@ def run_benchmark() -> None:
     last_sqlite_sample_latencies: list[float] = []
 
     for run_idx in range(1, REPETITIONS + 1):
-        # Alternate engine execution order to eliminate thermal and filesystem caching bias
         stratakv_first = (run_idx % 2 == 1)
         order_desc = "StrataKV -> SQLite" if stratakv_first else "SQLite -> StrataKV"
         print(f"\n[ITERATION {run_idx}/{REPETITIONS}] Executing benchmarks ({order_desc})...")
@@ -88,22 +105,34 @@ def run_benchmark() -> None:
             w_total = time.perf_counter() - t0
             w_ops = NUM_OPERATIONS / w_total
 
-            # Flush MemTable to disk
             lsm.flush()
 
-            # 2. Point Reads with strict correctness invariant assertion
+            # 2. Uncompacted Reads (multi-SSTable layout)
             t0 = time.perf_counter()
-            r_lats = []
+            ru_lats = []
             for k in keys:
                 t_op = time.perf_counter()
                 res = lsm.get(k)
-                r_lats.append(time.perf_counter() - t_op)
+                ru_lats.append(time.perf_counter() - t_op)
                 if res != expected_kv[k]:
                     raise AssertionError(f"Correctness failure in StrataKV on key '{k}'")
-            r_total = time.perf_counter() - t0
-            r_ops = NUM_OPERATIONS / r_total
+            ru_total = time.perf_counter() - t0
+            ru_ops = NUM_OPERATIONS / ru_total
 
-            # 3. Missing-Key Reads
+            # 3. Compacted Reads (single merged SSTable layout)
+            lsm.compact()
+            t0 = time.perf_counter()
+            rc_lats = []
+            for k in keys:
+                t_op = time.perf_counter()
+                res = lsm.get(k)
+                rc_lats.append(time.perf_counter() - t_op)
+                if res != expected_kv[k]:
+                    raise AssertionError(f"Correctness failure post-compaction on key '{k}'")
+            rc_total = time.perf_counter() - t0
+            rc_ops = NUM_OPERATIONS / rc_total
+
+            # 4. Missing-Key Reads
             t0 = time.perf_counter()
             m_lats = []
             for k in absent_keys:
@@ -111,12 +140,12 @@ def run_benchmark() -> None:
                 res = lsm.get(k)
                 m_lats.append(time.perf_counter() - t_op)
                 if res is not None:
-                    raise AssertionError(f"Correctness failure: non-existent key '{k}' returned non-None")
+                    raise AssertionError(f"Correctness failure: absent key '{k}' returned non-None")
             m_total = time.perf_counter() - t0
             m_ops = NUM_OPERATIONS / m_total
 
             lsm.close()
-            return (w_ops, w_lats), (r_ops, r_lats), (m_ops, m_lats)
+            return (w_ops, w_lats), (ru_ops, ru_lats), (rc_ops, rc_lats), (m_ops, m_lats)
 
         def bench_sqlite():
             conn = sqlite3.connect(BENCH_SQLITE_FILE)
@@ -135,7 +164,7 @@ def run_benchmark() -> None:
             sql_w_total = time.perf_counter() - t0
             sql_w_ops = NUM_OPERATIONS / sql_w_total
 
-            # 2. Point Reads with strict correctness invariant assertion
+            # 2. Point Reads
             t0 = time.perf_counter()
             sql_r_lats = []
             for k in keys:
@@ -165,14 +194,15 @@ def run_benchmark() -> None:
             return (sql_w_ops, sql_w_lats), (sql_r_ops, sql_r_lats), (sql_m_ops, sql_m_lats)
 
         if stratakv_first:
-            skv_w, skv_r, skv_m = bench_stratakv()
+            skv_w, skv_ru, skv_rc, skv_m = bench_stratakv()
             sql_w, sql_r, sql_m = bench_sqlite()
         else:
             sql_w, sql_r, sql_m = bench_sqlite()
-            skv_w, skv_r, skv_m = bench_stratakv()
+            skv_w, skv_ru, skv_rc, skv_m = bench_stratakv()
 
         raw_results["stratakv"]["writes"].append({"ops_sec": skv_w[0], "metrics": calculate_metrics(skv_w[1])})
-        raw_results["stratakv"]["reads"].append({"ops_sec": skv_r[0], "metrics": calculate_metrics(skv_r[1])})
+        raw_results["stratakv"]["reads_uncompacted"].append({"ops_sec": skv_ru[0], "metrics": calculate_metrics(skv_ru[1])})
+        raw_results["stratakv"]["reads_compacted"].append({"ops_sec": skv_rc[0], "metrics": calculate_metrics(skv_rc[1])})
         raw_results["stratakv"]["missing"].append({"ops_sec": skv_m[0], "metrics": calculate_metrics(skv_m[1])})
 
         raw_results["sqlite"]["writes"].append({"ops_sec": sql_w[0], "metrics": calculate_metrics(sql_w[1])})
@@ -183,9 +213,10 @@ def run_benchmark() -> None:
             last_stratakv_sample_latencies = skv_w[1]
             last_sqlite_sample_latencies = sql_w[1]
 
-    # Aggregate medians across runs
+    # Medians across runs
     med_skv_w_ops = float(np.median([r["ops_sec"] for r in raw_results["stratakv"]["writes"]]))
-    med_skv_r_ops = float(np.median([r["ops_sec"] for r in raw_results["stratakv"]["reads"]]))
+    med_skv_ru_ops = float(np.median([r["ops_sec"] for r in raw_results["stratakv"]["reads_uncompacted"]]))
+    med_skv_rc_ops = float(np.median([r["ops_sec"] for r in raw_results["stratakv"]["reads_compacted"]]))
     med_skv_m_ops = float(np.median([r["ops_sec"] for r in raw_results["stratakv"]["missing"]]))
 
     med_sql_w_ops = float(np.median([r["ops_sec"] for r in raw_results["sqlite"]["writes"]]))
@@ -193,72 +224,75 @@ def run_benchmark() -> None:
     med_sql_m_ops = float(np.median([r["ops_sec"] for r in raw_results["sqlite"]["missing"]]))
 
     med_skv_w_p99 = float(np.median([r["metrics"]["p99_ms"] for r in raw_results["stratakv"]["writes"]]))
-    med_skv_r_p99 = float(np.median([r["metrics"]["p99_ms"] for r in raw_results["stratakv"]["reads"]]))
+    med_skv_ru_p99 = float(np.median([r["metrics"]["p99_ms"] for r in raw_results["stratakv"]["reads_uncompacted"]]))
+    med_skv_rc_p99 = float(np.median([r["metrics"]["p99_ms"] for r in raw_results["stratakv"]["reads_compacted"]]))
     med_skv_m_p99 = float(np.median([r["metrics"]["p99_ms"] for r in raw_results["stratakv"]["missing"]]))
 
     med_sql_w_p99 = float(np.median([r["metrics"]["p99_ms"] for r in raw_results["sqlite"]["writes"]]))
     med_sql_r_p99 = float(np.median([r["metrics"]["p99_ms"] for r in raw_results["sqlite"]["reads"]]))
     med_sql_m_p99 = float(np.median([r["metrics"]["p99_ms"] for r in raw_results["sqlite"]["missing"]]))
 
-    # Strict denominator validation
     if med_sql_m_ops <= 0:
         raise ValueError(f"Invalid measured SQLite throughput: {med_sql_m_ops}")
     throughput_ratio = med_skv_m_ops / med_sql_m_ops
 
-    print("\n" + "=" * 70)
+    print("\n" + "=" * 78)
     print(" EMPIRICAL PERFORMANCE RESULTS SUMMARY (MEDIAN ACROSS RUNS) ")
-    print("=" * 70)
-    print(f"{'Metric':<25} | {'StrataKV':<14} | {'SQLite':<14} | {'Gain / Variance':<14}")
-    print("-" * 70)
-    print(f"{'Write Ops/sec':<25} | {med_skv_w_ops:<14.2f} | {med_sql_w_ops:<14.2f} | {med_skv_w_ops/med_sql_w_ops:.2f}x Throughput")
-    print(f"{'Write P99 Latency (ms)':<25} | {med_skv_w_p99:<14.3f} | {med_sql_w_p99:<14.3f} | {med_sql_w_p99/med_skv_w_p99:.2f}x Lower Latency")
-    print(f"{'Read Ops/sec (Hits)':<25} | {med_skv_r_ops:<14.2f} | {med_sql_r_ops:<14.2f} | {med_skv_r_ops/med_sql_r_ops:.2f}x Variance")
-    print(f"{'Read P99 Latency (ms)':<25} | {med_skv_r_p99:<14.3f} | {med_sql_r_p99:<14.3f} | -")
-    print(f"{'Missing Key Ops/sec':<25} | {med_skv_m_ops:<14.2f} | {med_sql_m_ops:<14.2f} | {throughput_ratio:.2f}x Ratio")
-    print(f"{'Missing P99 Latency (ms)':<25} | {med_skv_m_p99:<14.3f} | {med_sql_m_p99:<14.3f} | -")
-    print("=" * 70)
+    print("=" * 78)
+    print(f"{'Workload Scenario':<28} | {'StrataKV':<13} | {'SQLite':<13} | {'Multiple':<14}")
+    print("-" * 78)
+    print(f"{'Write Ops/sec':<28} | {med_skv_w_ops:<13.2f} | {med_sql_w_ops:<13.2f} | {med_skv_w_ops/med_sql_w_ops:.2f}x Throughput")
+    print(f"{'Write P99 Latency (ms)':<28} | {med_skv_w_p99:<13.3f} | {med_sql_w_p99:<13.3f} | {med_sql_w_p99/med_skv_w_p99:.2f}x Lower Latency")
+    print(f"{'Read (Uncompacted Multi-SST)':<28} | {med_skv_ru_ops:<13.2f} | {med_sql_r_ops:<13.2f} | {med_skv_ru_ops/med_sql_r_ops:.2f}x Variance")
+    print(f"{'Read (Compacted Single-SST)':<28} | {med_skv_rc_ops:<13.2f} | {med_sql_r_ops:<13.2f} | {med_skv_rc_ops/med_sql_r_ops:.2f}x Variance")
+    print(f"{'Read P99 (Compacted, ms)':<28} | {med_skv_rc_p99:<13.3f} | {med_sql_r_p99:<13.3f} | -")
+    print(f"{'Missing-Key Ops/sec':<28} | {med_skv_m_ops:<13.2f} | {med_sql_m_ops:<13.2f} | {throughput_ratio:.2f}x Ratio")
+    print(f"{'Missing-Key P99 Latency (ms)':<28} | {med_skv_m_p99:<13.3f} | {med_sql_m_p99:<13.3f} | -")
+    print("=" * 78)
 
-    # Save structured telemetry JSON
     with open("benchmark_results.json", "w", encoding="utf-8") as f:
         json.dump(raw_results, f, indent=2)
     print("[STATUS] Raw telemetry data saved to: benchmark_results.json")
 
-    # Generate 4-panel dashboard
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10), dpi=300)
-    plt.subplots_adjust(hspace=0.35, wspace=0.25)
+    fig, axes = plt.subplots(2, 2, figsize=(15, 11), dpi=300)
+    plt.subplots_adjust(hspace=0.38, wspace=0.25, bottom=0.08)
 
     # Panel 1: Throughput Comparison
     ax1 = axes[0, 0]
-    cats = ["Write Ops/Sec", "Read Ops/Sec", "Missing Key Ops/Sec"]
-    lsm_thru = [med_skv_w_ops, med_skv_r_ops, med_skv_m_ops]
-    sql_thru = [med_sql_w_ops, med_sql_r_ops, med_sql_m_ops]
+    cats = ["Write", "Read (Uncompacted)", "Read (Compacted)", "Missing Key"]
+    skv_thru = [med_skv_w_ops, med_skv_ru_ops, med_skv_rc_ops, med_skv_m_ops]
+    sql_thru = [med_sql_w_ops, med_sql_r_ops, med_sql_r_ops, med_sql_m_ops]
     x = np.arange(len(cats))
     width = 0.35
-    ax1.bar(x - width/2, lsm_thru, width, label="StrataKV (Ours)", color="#2ecc71", edgecolor="black")
+
+    ax1.bar(x - width/2, skv_thru, width, label="StrataKV (Ours)", color="#2ecc71", edgecolor="black")
     ax1.bar(x + width/2, sql_thru, width, label="SQLite", color="#e74c3c", edgecolor="black")
     ax1.set_ylabel("Operations / Second", fontweight="bold")
     ax1.set_title("Throughput Comparison (Higher is Better)", fontweight="bold")
     ax1.set_xticks(x)
-    ax1.set_xticklabels(cats, fontweight="bold")
+    ax1.set_xticklabels(cats, fontweight="bold", fontsize=8)
     ax1.legend()
     ax1.grid(axis="y", linestyle="--", alpha=0.5)
+    add_bar_labels(ax1, fmt="{:,.0f}")
 
     # Panel 2: Tail Latency (P99)
     ax2 = axes[0, 1]
-    cats_p99 = ["Write P99", "Read P99", "Missing Key P99"]
-    lsm_p99 = [med_skv_w_p99, med_skv_r_p99, med_skv_m_p99]
-    sql_p99 = [med_sql_w_p99, med_sql_r_p99, med_sql_m_p99]
-    ax2.bar(x - width/2, lsm_p99, width, label="StrataKV", color="#2ecc71", edgecolor="black")
+    cats_p99 = ["Write P99", "Read (Uncomp)", "Read (Comp)", "Missing P99"]
+    skv_p99 = [med_skv_w_p99, med_skv_ru_p99, med_skv_rc_p99, med_skv_m_p99]
+    sql_p99 = [med_sql_w_p99, med_sql_r_p99, med_sql_r_p99, med_sql_m_p99]
+
+    ax2.bar(x - width/2, skv_p99, width, label="StrataKV", color="#2ecc71", edgecolor="black")
     ax2.bar(x + width/2, sql_p99, width, label="SQLite", color="#e74c3c", edgecolor="black")
     ax2.set_ylabel("P99 Latency (ms)", fontweight="bold")
     ax2.set_title("Tail Latency (P99, Lower is Better)", fontweight="bold")
     ax2.set_xticks(x)
-    ax2.set_xticklabels(cats_p99, fontweight="bold")
+    ax2.set_xticklabels(cats_p99, fontweight="bold", fontsize=8)
     ax2.set_yscale("log")
     ax2.legend()
     ax2.grid(axis="y", linestyle="--", alpha=0.5)
+    add_bar_labels(ax2, fmt="{:.3f} ms")
 
-    # Panel 3: Latency Distribution with Explicit Sample Annotation
+    # Panel 3: Latency Distribution
     ax3 = axes[1, 0]
     np.random.seed(42)
     sample_indices = np.random.choice(NUM_OPERATIONS, 500, replace=False)
@@ -288,7 +322,7 @@ def run_benchmark() -> None:
     ax3.set_yscale("log")
     ax3.grid(axis="y", linestyle="--", alpha=0.5)
 
-    # Panel 4: Missing-Key Lookup Throughput Ratio (Corrected Label & Formula)
+    # Panel 4: Missing-Key Lookup Throughput Ratio
     ax4 = axes[1, 1]
     ax4.bar(["Missing-Key Throughput Ratio"], [throughput_ratio], color="#9b59b6", width=0.4, edgecolor="black")
     ax4.set_ylabel("Throughput Multiple (x)", fontweight="bold")
@@ -303,15 +337,43 @@ def run_benchmark() -> None:
         fontweight="bold",
         fontsize=11,
     )
+    ax4.set_ylim(0, max(throughput_ratio * 1.25, 2.0))
     ax4.grid(axis="y", linestyle="--", alpha=0.5)
+    add_bar_labels(ax4, fmt="{:.2f}x")
+
+    env_footer = (
+        f"Environment: {platform.system()} {platform.release()} ({platform.machine()}) | "
+        f"Python {platform.python_version()} | SQLite {sqlite3.sqlite_version} | "
+        f"Parameters: {REPETITIONS} Repetitions x {NUM_OPERATIONS:,} Operations"
+    )
+    fig.text(0.5, 0.02, env_footer, ha="center", fontsize=9, color="#555555", style="italic")
 
     dashboard_path = "benchmark_dashboard.png"
     plt.suptitle("StrataKV vs SQLite Storage Engine Empirical Benchmark", fontsize=15, fontweight="bold", y=0.98)
-    fig.savefig(dashboard_path, bbox_inches="tight")
-    plt.close(fig)
 
+    # Resilient save block to handle external locks from Windows Photos / OneDrive
+    if os.path.exists(dashboard_path):
+        try:
+            os.remove(dashboard_path)
+        except OSError:
+            pass
+
+    try:
+        fig.savefig(dashboard_path, bbox_inches="tight")
+        print(f"[STATUS] Visualization dashboard saved to: {dashboard_path}")
+    except OSError:
+        fallback_name = "benchmark_dashboard_latest.png"
+        fig.savefig(fallback_name, bbox_inches="tight")
+        print(f"[WARNING] '{dashboard_path}' is currently locked by an external process.")
+        print(f"[STATUS] Visualization dashboard saved to: {fallback_name}")
+        if os.path.exists(fallback_name) and not os.path.exists(dashboard_path):
+            try:
+                os.replace(fallback_name, dashboard_path)
+            except OSError:
+                pass
+
+    plt.close(fig)
     cleanup()
-    print(f"[STATUS] Visualization dashboard saved to: {dashboard_path}")
 
 
 if __name__ == "__main__":

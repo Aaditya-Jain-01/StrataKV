@@ -16,7 +16,7 @@ class MissingSSTableError(Exception):
 
 
 class CorruptedManifestError(Exception):
-    """Raised when manifest.json exists but is malformed, truncated, or unreadable."""
+    """Raised when manifest.json is missing in a non-empty store, malformed, or invalid."""
     pass
 
 
@@ -42,7 +42,7 @@ class SSTableHandle:
 
 
 def _sync_directory(dir_path: str, strict: bool = False) -> None:
-    """Durably syncs directory metadata on POSIX filesystems. Safe no-op on Windows (NT)."""
+    """Durably syncs directory metadata on POSIX filesystems. Safe no-op on Windows."""
     if os.name != "nt":
         try:
             fd = os.open(dir_path, os.O_RDONLY)
@@ -56,6 +56,16 @@ def _sync_directory(dir_path: str, strict: bool = False) -> None:
 
 
 class LSMTree:
+    """
+    Production Log-Structured Merge-tree (LSM-Tree) engine.
+    
+    Durability Guarantee:
+      - WAL: append + flush + fsync on every write operation.
+      - SSTable/Index/BloomFilter: written to .tmp files, flushed, fsynced, and atomically replaced.
+      - Manifest: written to manifest.json.tmp, fsynced, and atomically replaced via os.replace.
+      - Directory: synchronized via os.fsync on POSIX when strict_dir_sync=True.
+    """
+
     def __init__(
         self,
         data_dir: str = "data_store",
@@ -72,7 +82,9 @@ class LSMTree:
         self.data_dir = data_dir
         self.memtable_threshold = memtable_threshold_bytes
         self.sparse_interval = sparse_interval
-        self.strict_dir_sync = strict_dir_sync
+        self.strict_dir_sync = strict_dir_sync or (
+            os.getenv("STRATAKV_STRICT_DIR_SYNC", "0").lower() in ("1", "true", "yes")
+        )
 
         os.makedirs(self.data_dir, exist_ok=True)
         _sync_directory(self.data_dir, self.strict_dir_sync)
@@ -103,7 +115,7 @@ class LSMTree:
 
     def _load_manifest(self) -> Optional[Dict[str, Any]]:
         if not os.path.exists(self.manifest_path):
-            return None  # Genuine fresh database initialization
+            return None  # Genuinely uninitialized directory
 
         try:
             with open(self.manifest_path, "r", encoding="utf-8") as f:
@@ -111,15 +123,29 @@ class LSMTree:
         except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
             raise CorruptedManifestError(f"Unreadable or corrupt manifest at {self.manifest_path}: {e}") from e
 
-        if not isinstance(data, dict) or "sstables" not in data or "next_seq" not in data:
-            raise CorruptedManifestError(
-                f"Malformed manifest schema in {self.manifest_path}: missing required root keys"
-            )
+        if not isinstance(data, dict):
+            raise CorruptedManifestError(f"Malformed manifest in {self.manifest_path}: root must be a JSON object")
 
-        if not isinstance(data["sstables"], list) or not isinstance(data["next_seq"], int):
-            raise CorruptedManifestError(
-                f"Invalid field types in manifest schema at {self.manifest_path}"
-            )
+        if data.get("version") != 1:
+            raise CorruptedManifestError(f"Unsupported manifest version: {data.get('version')} (expected 1)")
+
+        next_seq = data.get("next_seq")
+        if not isinstance(next_seq, int) or next_seq < 1:
+            raise CorruptedManifestError(f"Invalid next_seq in manifest: {next_seq} (must be an integer >= 1)")
+
+        sstables = data.get("sstables")
+        if not isinstance(sstables, list):
+            raise CorruptedManifestError("Invalid sstables field in manifest: must be a list")
+
+        seen_tables = set()
+        for entry in sstables:
+            if not isinstance(entry, str) or not entry.strip():
+                raise CorruptedManifestError(f"Invalid SSTable entry in manifest: '{entry}' (must be non-empty string)")
+            if entry != os.path.basename(entry) or "/" in entry or "\\" in entry or ".." in entry:
+                raise CorruptedManifestError(f"Unsafe path or separator in SSTable manifest entry: '{entry}'")
+            if entry in seen_tables:
+                raise CorruptedManifestError(f"Duplicate SSTable entry in manifest: '{entry}'")
+            seen_tables.add(entry)
 
         return data
 
@@ -162,6 +188,17 @@ class LSMTree:
 
                 self._cleanup_orphaned_files(declared_bases)
             else:
+                # Fail-safe check: if manifest is missing but data files exist, halt immediately
+                existing_ssts = glob.glob(os.path.join(self.data_dir, "sst_*"))
+                wal_has_content = os.path.exists(self.wal_path) and os.path.getsize(self.wal_path) > 0
+
+                if existing_ssts or wal_has_content:
+                    raise CorruptedManifestError(
+                        f"Missing manifest.json in non-empty storage directory '{self.data_dir}' "
+                        f"containing {len(existing_ssts)} SSTables and WAL data. Halting to prevent data loss."
+                    )
+
+                # Pure fresh initialization
                 self.next_file_seq = 1
                 self._save_manifest([], self.next_file_seq)
 
