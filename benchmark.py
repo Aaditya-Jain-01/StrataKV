@@ -38,20 +38,42 @@ def calculate_metrics(latencies_sec: list[float]) -> dict[str, float]:
     }
 
 
-def add_bar_labels(ax, fmt: str = "{:,.0f}", stagger: bool = False) -> None:
-    """Adds exact numerical text labels directly above plot bars with optional staggering."""
+def add_throughput_labels(ax) -> None:
+    """Adds exact numerical text labels directly above throughput plot bars."""
+    for rect in ax.patches:
+        height = rect.get_height()
+        if height > 0:
+            ax.annotate(
+                f"{height:,.0f}",
+                xy=(rect.get_x() + rect.get_width() / 2, height),
+                xytext=(0, 4),
+                textcoords="offset points",
+                ha="center",
+                va="bottom",
+                fontsize=7.5,
+                fontweight="bold",
+            )
+
+
+def add_p99_labels(ax, num_categories: int = 4) -> None:
+    """
+    Adds P99 labels with vertical staggering between engine pairs.
+    StrataKV labels sit at +4pt, SQLite labels sit at +15pt to eliminate log-scale overlaps.
+    """
     for idx, rect in enumerate(ax.patches):
         height = rect.get_height()
         if height > 0:
-            y_offset = (13 if idx % 2 == 1 else 3) if stagger else 4
+            # First group (indices 0 to num_categories-1) is StrataKV; second group is SQLite
+            is_sqlite = idx >= num_categories
+            y_offset = 15 if is_sqlite else 4
             ax.annotate(
-                fmt.format(height),
+                f"{height:.3f} ms",
                 xy=(rect.get_x() + rect.get_width() / 2, height),
                 xytext=(0, y_offset),
                 textcoords="offset points",
                 ha="center",
                 va="bottom",
-                fontsize=7.5,
+                fontsize=7.0,
                 fontweight="bold",
             )
 
@@ -62,7 +84,7 @@ def run_benchmark() -> None:
     print(f" STRATAKV VS SQLITE: STATISTICAL BENCHMARK ({REPETITIONS} RUNS x {NUM_OPERATIONS:,} OPS) ")
     print("-" * 78)
 
-    # Query active SQLite PRAGMAs directly from the SQLite engine
+    # Query active SQLite PRAGMAs directly from the engine connection
     conn_probe = sqlite3.connect(BENCH_SQLITE_FILE)
     c_probe = conn_probe.cursor()
     c_probe.execute("PRAGMA journal_mode;")
@@ -77,7 +99,6 @@ def run_benchmark() -> None:
     absent_keys = [f"nonexistent_key_{i:06d}" for i in range(NUM_OPERATIONS)]
     expected_kv = dict(zip(keys, values))
 
-    # Standardized flat metadata schema guaranteeing 1:1 match with JSON output
     raw_results = {
         "metadata": {
             "platform": platform.platform(),
@@ -93,15 +114,16 @@ def run_benchmark() -> None:
             "repetitions": REPETITIONS,
             "workload_execution_model": "Alternating engine order; sequential stages per run (writes -> uncompacted reads -> compaction -> compacted reads -> missing reads)",
             "cache_state": "Intra-run warm OS filesystem page cache for reads post-write and post-compaction",
+            "sqlite_baseline_note": "Identical SQLite baseline is reused across uncompacted and compacted read comparisons",
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         },
         "stratakv": {"writes": [], "reads_uncompacted": [], "reads_compacted": [], "missing_compacted": []},
         "sqlite": {"writes": [], "reads": [], "missing": []},
     }
 
-    # True pooling across all 5 runs (total 50,000 operations per engine)
-    all_stratakv_write_latencies: list[float] = []
-    all_sqlite_write_latencies: list[float] = []
+    # True multi-run accumulation across all 5 repetitions (50,000 total operations each)
+    all_stratakv_writes: list[float] = []
+    all_sqlite_writes: list[float] = []
 
     for run_idx in range(1, REPETITIONS + 1):
         stratakv_first = (run_idx % 2 == 1)
@@ -226,11 +248,11 @@ def run_benchmark() -> None:
         raw_results["sqlite"]["reads"].append({"ops_sec": sql_r[0], "metrics": calculate_metrics(sql_r[1])})
         raw_results["sqlite"]["missing"].append({"ops_sec": sql_m[0], "metrics": calculate_metrics(sql_m[1])})
 
-        # Accumulate write latencies across every single repetition
-        all_stratakv_write_latencies.extend(skv_w[1])
-        all_sqlite_write_latencies.extend(sql_w[1])
+        # Append all write latencies from this run into the pooled multi-run datasets
+        all_stratakv_writes.extend(skv_w[1])
+        all_sqlite_writes.extend(sql_w[1])
 
-    # Medians and standard deviations
+    # Medians and standard deviations across runs
     skv_w_rates = [r["ops_sec"] for r in raw_results["stratakv"]["writes"]]
     sql_w_rates = [r["ops_sec"] for r in raw_results["sqlite"]["writes"]]
     skv_m_rates = [r["ops_sec"] for r in raw_results["stratakv"]["missing_compacted"]]
@@ -297,9 +319,9 @@ def run_benchmark() -> None:
     ax1.set_xticklabels(cats, fontweight="bold", fontsize=8)
     ax1.legend()
     ax1.grid(axis="y", linestyle="--", alpha=0.5)
-    add_bar_labels(ax1, fmt="{:,.0f}", stagger=False)
+    add_throughput_labels(ax1)
 
-    # Panel 2: Tail Latency (P99) with Staggered Labels to Prevent Collisions
+    # Panel 2: Tail Latency (P99) with Vertical Staggering (StrataKV: +4pt, SQLite: +15pt)
     ax2 = axes[0, 1]
     cats_p99 = ["Write P99", "Read (Uncomp)", "Read (Comp)", "Missing (Comp)"]
     skv_p99 = [med_skv_w_p99, med_skv_ru_p99, med_skv_rc_p99, med_skv_m_p99]
@@ -314,15 +336,14 @@ def run_benchmark() -> None:
     ax2.set_yscale("log")
     ax2.legend()
     ax2.grid(axis="y", linestyle="--", alpha=0.5)
-    add_bar_labels(ax2, fmt="{:.3f} ms", stagger=True)
+    add_p99_labels(ax2, num_categories=len(cats_p99))
 
-    # Panel 3: Latency Distribution (Truly pooled across all 5 runs)
+    # Panel 3: Latency Distribution (Truly pooled across all 5 runs: 50,000 ops)
     ax3 = axes[1, 0]
     np.random.seed(42)
-    # Take a reproducible sample of 500 operations from all 50,000 pooled writes
-    sample_indices = np.random.choice(len(all_stratakv_write_latencies), 500, replace=False)
-    lsm_samples = np.array(all_stratakv_write_latencies)[sample_indices] * 1000.0
-    sql_samples = np.array(all_sqlite_write_latencies)[sample_indices] * 1000.0
+    sample_indices = np.random.choice(len(all_stratakv_writes), 500, replace=False)
+    lsm_samples = np.array(all_stratakv_writes)[sample_indices] * 1000.0
+    sql_samples = np.array(all_sqlite_writes)[sample_indices] * 1000.0
 
     boxplot_labels = ["StrataKV Writes", "SQLite Writes"]
     try:
@@ -364,7 +385,20 @@ def run_benchmark() -> None:
     )
     ax4.set_ylim(0, max(throughput_ratio * 1.25, 2.0))
     ax4.grid(axis="y", linestyle="--", alpha=0.5)
-    add_bar_labels(ax4, fmt="{:.2f}x", stagger=False)
+
+    for rect in ax4.patches:
+        h = rect.get_height()
+        if h > 0:
+            ax4.annotate(
+                f"{h:.2f}x",
+                xy=(rect.get_x() + rect.get_width() / 2, h),
+                xytext=(0, 4),
+                textcoords="offset points",
+                ha="center",
+                va="bottom",
+                fontsize=8,
+                fontweight="bold",
+            )
 
     env_footer = (
         f"Environment: {platform.system()} {platform.release()} ({platform.machine()}) | "
