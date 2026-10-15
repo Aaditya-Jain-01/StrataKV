@@ -34,7 +34,6 @@ def run_tests():
     assert tree.get("user:target") is None
     tree.close()
 
-    # Re-open database from clean manifest
     reopened = LSMTree(data_dir=TEST_DIR, memtable_threshold_bytes=64 * 1024)
     assert reopened.get("user:target") is None, "Deleted record was resurrected after clean restart"
     reopened.close()
@@ -60,7 +59,6 @@ def run_tests():
     items = [("valid_key", "valid_value")]
     SSTableWriter.write(sst_file, idx_file, iter(items))
 
-    # Overwrite value payload with invalid UTF-8 bytes (0xFF) while keeping CRC valid
     k_bytes = b"valid_key"
     bad_v_bytes = b"\xff\xff\xff"
     payload = k_bytes + bad_v_bytes
@@ -84,12 +82,10 @@ def run_tests():
     with open(idx_len_file, "wb") as f_idx:
         f_idx.write(struct.pack("!IQ", len(k_target), 0) + k_target)
 
-    # Key length = 500 MB (exceeds MAX_KEY_LEN limit of 64 KB)
     with open(sst_len_file, "wb") as f:
         f.write(struct.pack("!III", 12345, 500 * 1024 * 1024, 10))
 
     try:
-        # SSTableReader validates index-to-record boundaries during initialization
         SSTableReader(sst_len_file, idx_len_file)
         assert False, "SSTableReader accepted implausible record length in header"
     except CorruptedSSTableError:

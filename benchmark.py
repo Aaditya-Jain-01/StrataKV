@@ -61,6 +61,15 @@ def run_benchmark() -> None:
     print(f" STRATAKV VS SQLITE: STATISTICAL BENCHMARK ({REPETITIONS} RUNS x {NUM_OPERATIONS:,} OPS) ")
     print("-" * 78)
 
+    conn_probe = sqlite3.connect(BENCH_SQLITE_FILE)
+    c_probe = conn_probe.cursor()
+    c_probe.execute("PRAGMA journal_mode;")
+    sqlite_journal_mode = str(c_probe.fetchone()[0]).upper()
+    c_probe.execute("PRAGMA synchronous;")
+    sqlite_sync_setting = int(c_probe.fetchone()[0])
+    conn_probe.close()
+    cleanup()
+
     keys = [f"usr_{i:06d}" for i in range(NUM_OPERATIONS)]
     values = [f"payload_value_blob_{i:06d}_{'a'*24}" for i in range(NUM_OPERATIONS)]
     absent_keys = [f"nonexistent_key_{i:06d}" for i in range(NUM_OPERATIONS)]
@@ -72,11 +81,17 @@ def run_benchmark() -> None:
             "processor": platform.processor(),
             "python_version": sys.version.split()[0],
             "sqlite_version": sqlite3.sqlite_version,
+            "sqlite_configuration": {
+                "journal_mode": sqlite_journal_mode,
+                "synchronous": sqlite_sync_setting,
+                "transaction_scope": "autocommit (per-insert commit mimicking WAL sync semantics)",
+            },
             "numpy_version": np.__version__,
             "matplotlib_version": matplotlib.__version__,
             "num_operations": NUM_OPERATIONS,
             "repetitions": REPETITIONS,
-            "cache_state": "Workloads run sequentially within each repetition (post-compaction read and missing tests)",
+            "execution_model": "Alternating engine order; sequential workload stages (uncompacted -> compacted -> missing)",
+            "cache_state": "OS filesystem page cache retained between intra-run stages (warm-cache post-write)",
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         },
         "stratakv": {"writes": [], "reads_uncompacted": [], "reads_compacted": [], "missing_compacted": []},
@@ -132,7 +147,7 @@ def run_benchmark() -> None:
             rc_total = time.perf_counter() - t0
             rc_ops = NUM_OPERATIONS / rc_total
 
-            # 4. Missing-Key Reads (Compacted Database)
+            # 4. Missing-Key Reads (Compacted DB)
             t0 = time.perf_counter()
             m_lats = []
             for k in absent_keys:
@@ -213,7 +228,6 @@ def run_benchmark() -> None:
             last_stratakv_sample_latencies = skv_w[1]
             last_sqlite_sample_latencies = sql_w[1]
 
-    # Medians and standard deviations across runs
     skv_w_rates = [r["ops_sec"] for r in raw_results["stratakv"]["writes"]]
     sql_w_rates = [r["ops_sec"] for r in raw_results["sqlite"]["writes"]]
     skv_m_rates = [r["ops_sec"] for r in raw_results["stratakv"]["missing_compacted"]]
@@ -350,10 +364,10 @@ def run_benchmark() -> None:
 
     env_footer = (
         f"Environment: {platform.system()} {platform.release()} ({platform.machine()}) | "
-        f"Python {platform.python_version()} | SQLite {sqlite3.sqlite_version} | "
-        f"Parameters: {REPETITIONS} Repetitions x {NUM_OPERATIONS:,} Operations"
+        f"Python {platform.python_version()} | SQLite {sqlite3.sqlite_version} (journal={sqlite_journal_mode}, sync={sqlite_sync_setting}) | "
+        f"Params: {REPETITIONS} Runs x {NUM_OPERATIONS:,} Ops"
     )
-    fig.text(0.5, 0.02, env_footer, ha="center", fontsize=9, color="#555555", style="italic")
+    fig.text(0.5, 0.02, env_footer, ha="center", fontsize=8.5, color="#555555", style="italic")
 
     dashboard_path = "benchmark_dashboard.png"
     plt.suptitle("StrataKV vs SQLite Storage Engine Empirical Benchmark", fontsize=15, fontweight="bold", y=0.98)

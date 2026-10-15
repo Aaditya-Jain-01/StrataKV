@@ -10,7 +10,8 @@ from engine.wal import WriteAheadLog
 from engine.sstable import SSTableWriter, SSTableReader, CorruptedSSTableError
 from engine.bloom_filter import BloomFilter, CorruptedBloomFilterError
 
-SSTABLE_NAME_PATTERN = re.compile(r"^sst_\d{6}(_compacted)?$")
+# Allow 6 or more digits for long-running sequence scalability (supports >= 1,000,000 files)
+SSTABLE_NAME_PATTERN = re.compile(r"^sst_\d{6,}(_compacted)?$")
 
 
 class MissingSSTableError(Exception):
@@ -48,9 +49,8 @@ def _sync_directory(dir_path: str, strict: bool = False) -> None:
     """
     Durably syncs directory metadata on POSIX filesystems.
     
-    On Windows (NTFS), filesystem metadata updates are managed by the NTFS transactional log 
-    and FlushFileBuffers on individual file handles; directory handles do not support fsync (Errno 22).
-    On POSIX systems, directory syncing ensures directory entry links survive sudden power cuts.
+    On Windows (NTFS), directory handle fsync is unsupported (Errno 22); metadata persistence
+    relies on NTFS journaling, individual file handle flush/fsync, and atomic os.replace semantics.
     """
     if os.name != "nt":
         try:
@@ -72,8 +72,7 @@ class LSMTree:
       - WAL: append + flush + os.fsync on every write operation.
       - SSTable/Index/BloomFilter: written to .tmp files, flushed, fsynced, and atomically replaced via os.replace.
       - Manifest: written to manifest.json.tmp, fsynced, and atomically replaced via os.replace.
-      - Directory: synchronized via os.fsync on POSIX when strict_dir_sync=True. On Windows, 
-        durability relies on NTFS journal guarantees and atomic file replacement semantics.
+      - Directory: synchronized via os.fsync on POSIX when strict_dir_sync=True.
     """
 
     def __init__(
@@ -125,7 +124,7 @@ class LSMTree:
 
     def _load_manifest(self) -> Optional[Dict[str, Any]]:
         if not os.path.exists(self.manifest_path):
-            return None  # Manifest absent; _recover_and_init determines if this is a fresh start
+            return None
 
         try:
             with open(self.manifest_path, "r", encoding="utf-8") as f:
@@ -199,7 +198,6 @@ class LSMTree:
 
                 self._cleanup_orphaned_files(declared_bases)
             else:
-                # Fail-safe check: halt if manifest is missing from a populated storage directory
                 existing_ssts = glob.glob(os.path.join(self.data_dir, "sst_*"))
                 wal_has_content = os.path.exists(self.wal_path) and os.path.getsize(self.wal_path) > 0
 
