@@ -55,22 +55,45 @@ def add_throughput_labels(ax) -> None:
 
 
 def add_p99_labels(ax, num_categories: int = 4) -> None:
+    """
+    Offsets labels using both horizontal and tiered vertical positions.
+    StrataKV (green, left) shifts left (-3pt) at standard elevation (+4pt).
+    SQLite (red, right) shifts right (+3pt) with tiered elevation:
+      - Uncompacted Read: +13pt
+      - Compacted Read:   +25pt (prevents collision between identical heights)
+    """
     for idx, rect in enumerate(ax.patches):
         height = rect.get_height()
-        if height > 0:
-            is_sqlite = idx >= num_categories
-            # Stagger vertical offset: StrataKV at +4pt, SQLite at +18pt
-            y_offset = 18 if is_sqlite else 4
-            ax.annotate(
-                f"{height:.3f} ms",
-                xy=(rect.get_x() + rect.get_width() / 2, height),
-                xytext=(0, y_offset),
-                textcoords="offset points",
-                ha="center",
-                va="bottom",
-                fontsize=7.0,
-                fontweight="bold",
-            )
+        if height <= 0:
+            continue
+
+        is_sqlite = idx >= num_categories
+        cat_idx = idx % num_categories
+
+        if not is_sqlite:
+            x_off = -3
+            y_off = 4
+        else:
+            x_off = 3
+            if cat_idx == 1:       # Read (Uncomp)
+                y_off = 13
+            elif cat_idx == 2:     # Read (Comp)
+                y_off = 25
+            elif cat_idx == 0:     # Write P99
+                y_off = 6
+            else:                  # Missing P99
+                y_off = 8
+
+        ax.annotate(
+            f"{height:.3f} ms",
+            xy=(rect.get_x() + rect.get_width() / 2, height),
+            xytext=(x_off, y_off),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=7.0,
+            fontweight="bold",
+        )
 
 
 def render_dashboard(raw_results: dict, all_skv_writes: list[float], all_sql_writes: list[float]) -> None:
@@ -101,7 +124,7 @@ def render_dashboard(raw_results: dict, all_skv_writes: list[float], all_sql_wri
     num_ops = meta.get("num_operations", NUM_OPERATIONS)
 
     fig, axes = plt.subplots(2, 2, figsize=(15, 11), dpi=300)
-    plt.subplots_adjust(hspace=0.38, wspace=0.25, bottom=0.08)
+    plt.subplots_adjust(hspace=0.38, wspace=0.25, bottom=0.09)
 
     # Panel 1: Throughput Comparison
     ax1 = axes[0, 0]
@@ -134,7 +157,6 @@ def render_dashboard(raw_results: dict, all_skv_writes: list[float], all_sql_wri
     ax2.set_xticks(x)
     ax2.set_xticklabels(cats_p99, fontweight="bold", fontsize=8)
     ax2.set_yscale("log")
-    # Generous top headroom prevents the 4.842 ms label from touching the title
     ax2.set_ylim(bottom=0.001, top=70.0)
     ax2.legend()
     ax2.grid(axis="y", linestyle="--", alpha=0.5)
@@ -202,13 +224,19 @@ def render_dashboard(raw_results: dict, all_skv_writes: list[float], all_sql_wri
                 fontweight="bold",
             )
 
+    baseline_note = (
+        "Note: SQLite relies on B-Tree primary-key indexing with no LSM compaction phase; "
+        "its read baseline is reused across uncompacted and compacted StrataKV comparisons."
+    )
+    fig.text(0.5, 0.038, baseline_note, ha="center", fontsize=8.0, color="#333333", style="italic")
+
     env_footer = (
         f"Environment: {meta.get('platform', platform.platform())} | "
         f"Python {meta.get('python_version', sys.version.split()[0])} | "
         f"SQLite {meta.get('sqlite_version', sqlite3.sqlite_version)} (journal={sqlite_journal_mode}, sync={sqlite_sync_setting}) | "
         f"Params: {repetitions} Runs x {num_ops:,} Ops (Sequential Stages)"
     )
-    fig.text(0.5, 0.02, env_footer, ha="center", fontsize=8.5, color="#555555", style="italic")
+    fig.text(0.5, 0.018, env_footer, ha="center", fontsize=8.0, color="#555555")
 
     dashboard_path = "benchmark_dashboard.png"
     plt.suptitle("StrataKV vs SQLite Storage Engine Empirical Benchmark", fontsize=15, fontweight="bold", y=0.98)
@@ -444,8 +472,7 @@ if __name__ == "__main__":
             sys.exit(1)
         with open("benchmark_results.json", "r", encoding="utf-8") as f:
             data = json.load(f)
-        
-        # Synthesize pooled distribution matching the saved run metrics
+
         np.random.seed(42)
         skv_writes = []
         sql_writes = []
