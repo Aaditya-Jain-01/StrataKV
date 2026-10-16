@@ -14,24 +14,24 @@
 
 ## 🧠 Overview
 
-**StrataKV** is an embedded Key-Value storage engine and asynchronous HTTP microservice built from scratch in Python, implementing an immutable **Log-Structured Merge-tree (LSM-tree)** architecture. Traditional in-place update storage engines (such as B-Trees) incur random I/O amplification under write-heavy workloads due to leaf-page dirtying and disk rewrites. StrataKV mitigates write amplification by converting all incoming mutations into sequential disk appends through a Write-Ahead Log (WAL) and an in-memory SkipList MemTable, deferring sorting and deduplication to asynchronous background compaction.
+**StrataKV** is an educational embedded Key-Value storage engine and asynchronous HTTP microservice built from scratch in Python, implementing an immutable **Log-Structured Merge-tree (LSM-tree)** architecture. Traditional in-place update storage engines (such as B-Trees) incur random I/O amplification under write-heavy workloads due to leaf-page dirtying and disk rewrites. StrataKV mitigates write amplification by converting all incoming mutations into sequential disk appends through a Write-Ahead Log (WAL) and an in-memory SkipList MemTable, deferring sorting and deduplication to asynchronous background compaction.
 
-To overcome the classical read penalty inherent to multi-tier LSM-trees, StrataKV pairs each on-disk Sorted String Table (SSTable) with an in-memory sparse key index and an exact bitwise Bloom filter. 
+To offset the read latency inherent to multi-segment LSM structures, StrataKV pairs each on-disk Sorted String Table (SSTable) with an in-memory sparse key index and a probabilistic bit-array Bloom filter to prune unnecessary disk reads for absent keys.
 
-In empirical 5-run alternating benchmarks against a transactional SQLite baseline (`journal_mode=DELETE`, `synchronous=FULL`, 10,000 operations per stage), StrataKV demonstrates an **8.78x write throughput advantage** (1,699.9 vs. 193.6 ops/sec) and a **16.92x throughput ratio on compacted missing-key lookups** (368,184.4 vs. 21,759.6 ops/sec), cutting tail P99 missing-key read latency from 0.180 ms down to 0.008 ms (**22.50x lower tail latency**) through bitwise Bloom filter pruning.
+In empirical 5-run alternating benchmarks against an autocommit SQLite baseline (`journal_mode=DELETE`, `synchronous=FULL`, 10,000 operations per stage), StrataKV achieved an **8.78x write throughput advantage** (1,699.9 vs. 193.6 ops/sec) and a **16.92x throughput ratio on compacted missing-key lookups** (368,184.4 vs. 21,759.6 ops/sec) on the tested configuration, reducing P99 tail latency on absent keys from 0.180 ms to 0.008 ms (**22.50x lower tail latency**). Conversely, SQLite demonstrated higher throughput on point reads of existing keys (18,406.1 vs. 12,362.9 ops/sec), illustrating the fundamental architectural trade-off between LSM write-append throughput and B-Tree point-read locality.
 
 ---
 
 ## ⚙️ Features
 
-- **Sequential Append-Only Write-Ahead Log (WAL)**: Immediate, unbuffered persistence for crash durability prior to memtable ingestion.
-- **In-Memory SkipList MemTable**: Probabilistic $O(\log n)$ ordered key-value indexing with parameterized geometric height distributions.
-- **Binary-Framed Immutable SSTables**: Big-endian binary serialization with per-record **CRC32** checksum validation and byte-exact key/value length framing.
-- **Bitwise Bloom Filter Segments**: Standalone serialized bit arrays implementing optimal hashing ($k = \frac{m}{n} \ln 2$) to eliminate negative-lookup disk penalties.
-- **Sparse Offset Indexing**: Monotonically ordered physical file offset pointers enabling binary-search block alignment without scanning record bodies.
-- **Tombstone Eviction & Compaction**: Merges multi-SST runs into single consolidated segments, evicting deleted keys and stale overwritten revisions.
-- **Atomic Manifest Protocol**: State transitions recorded via atomic file swaps (`os.replace`) with fail-fast validation (`CorruptedManifestError`, `MissingSSTableError`) preventing data resurrection.
-- **Containerized REST Microservice**: Fully typed asynchronous API endpoints powered by **FastAPI** and **Pydantic v2**, packaged for production via **Docker**.
+- **Sequential Append-Only Write-Ahead Log (WAL)**: Unbuffered append-only write persistence for crash recovery prior to MemTable insertion.
+- **In-Memory SkipList MemTable**: Probabilistic $O(\log n)$ ordered key-value indexing with geometric level distribution.
+- **Binary-Framed Immutable SSTables**: Big-endian binary serialization with per-record **CRC32** payload checksum validation and explicit key/value length framing.
+- **Bit-Array Bloom Filter Segments**: Serialized bit arrays implementing optimal hash scaling ($k = \frac{m}{n} \ln 2$) to prune disk lookups for absent keys.
+- **Sparse Offset Indexing**: Monotonically ordered physical file offset pointers enabling binary search over block boundaries without scanning record bodies.
+- **Tombstone Eviction & Compaction**: Merges multi-SST runs into single consolidated segments, evicting deleted keys and superseded revisions.
+- **Atomic Manifest Protocol**: State transitions recorded via atomic file replacement (`os.replace`) with fail-fast validation (`CorruptedManifestError`, `MissingSSTableError`) preventing silent data loss.
+- **Containerized REST Microservice**: Fully typed asynchronous API endpoints powered by **FastAPI** and **Pydantic v2**, containerized with **Docker** for reproducible local deployment and testing.
 
 ---
 
@@ -47,11 +47,11 @@ In empirical 5-run alternating benchmarks against a transactional SQLite baselin
 
 ## 📊 Empirical Evaluation & Benchmarks
 
-StrataKV was evaluated against an autocommit SQLite baseline (`PRAGMA synchronous=FULL`, `PRAGMA journal_mode=DELETE`) over **5 independent repetitions** (10,000 ops per stage) using an alternating execution order (`StrataKV` $\leftrightarrow$ `SQLite`) to minimize persistent cache bias.
+StrataKV was evaluated against an autocommit SQLite baseline (`PRAGMA synchronous=FULL`, `PRAGMA journal_mode=DELETE`) over **5 independent repetitions** (10,000 operations per stage) using an alternating execution order (`StrataKV` $\leftrightarrow$ `SQLite`) to minimize persistent cache bias.
 
 ### 1. Workload Medians & Throughput Multiples
 
-| Workload Scenario | StrataKV Engine (Ours) | SQLite Baseline | Multiple / Systems Gain |
+| Workload Scenario | StrataKV Engine (Ours) | SQLite Baseline | Multiple / Comparative Ratio |
 | :--- | :--- | :--- | :--- |
 | **Write Throughput** | **1,699.9 ops/sec** | 193.6 ops/sec | **8.78x Throughput Ratio** |
 | **Write P99 Latency** | **1.084 ms** | 8.388 ms | **7.74x Lower Tail Latency** |
@@ -67,7 +67,7 @@ StrataKV was evaluated against an autocommit SQLite baseline (`PRAGMA synchronou
 
 ### 2. Statistical Distribution & Run-to-Run Variability (5 Runs)
 
-| Workload Scenario | Median | Min Run | Max Run | StdDev ($\sigma$) | Throughput Multiple |
+| Workload Scenario | Median | Min Run | Max Run | StdDev ($\sigma$) | Multiple |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **StrataKV Writes** | **1,699.9 ops/sec** | 976.0 ops/sec | 1,729.0 ops/sec | $\pm 286.3$ | **8.78x Speedup** |
 | **SQLite Writes** | 193.6 ops/sec | 117.0 ops/sec | 197.0 ops/sec | $\pm 30.9$ | Baseline |
@@ -77,10 +77,11 @@ StrataKV was evaluated against an autocommit SQLite baseline (`PRAGMA synchronou
 | **StrataKV Missing-Key (Compacted)** | **368,184.4 ops/sec** | 102,965.0 ops/sec | 525,959.0 ops/sec | $\pm 168,174.6$ | **16.92x Throughput Ratio** |
 | **SQLite Missing-Key** | 21,759.6 ops/sec | 9,708.0 ops/sec | 25,003.0 ops/sec | $\pm 5,414.8$ | Baseline |
 
-#### Systems Analysis & Root Causes of Outlier Runs
-- **Operating System Page-Cache & Write-Back Latency:** The benchmark executes sequential workload phases per repetition (writes $\to$ uncompacted reads $\to$ compaction $\to$ compacted reads $\to$ missing reads). High-throughput append and compaction bursts asynchronously trigger OS kernel dirty-page write-back queues, periodically causing latency stalls in subsequent read stages across both engines.
-- **Process Preemption:** Running user-space storage engines in Python on a consumer OS without real-time thread isolation introduces non-deterministic scheduling variations during CPU-bound hashing and filesystem loops.
-- **In-Memory Bloom Filter Pruning:** In runs free of OS thread interruptions, StrataKV filters non-existent keys purely in memory (~526k ops/sec). When background OS thread interruptions occur, throughput drops to ~103k ops/sec, but still outperforms SQLite's B-Tree traversal across all trials.
+#### Environmental Observations & Hypotheses on Run-to-Run Spread
+Across the 5 recorded repetitions, measured throughput showed substantial spread (e.g., compacted missing-key throughput spanned 102,965 to 525,959 ops/sec). Because StrataKV executes in Python user space on a consumer operating system without kernel cache locking or real-time CPU affinity, potential contributing factors include:
+- **Page-Cache & Write-Back Queuing (Hypothesis):** The benchmark executes sequential phases per run (writes $\to$ uncompacted reads $\to$ compaction $\to$ compacted reads $\to$ missing reads). High-throughput append and compaction bursts write large volumes of dirty pages; asynchronous operating-system write-backs may intermittently contend with storage queues during subsequent read stages across both engines.
+- **Process Scheduling & Background Preemption (Hypothesis):** User-space hashing, binary serialization, and filesystem loops are susceptible to scheduling interruptions by background operating-system processes and system services.
+- **In-Memory Bloom Filter Behavior:** In runs with minimal system interruption, absent keys are pruned purely in-memory (~526k ops/sec). When background preemption or memory cache pressure occurs, throughput drops toward ~103k ops/sec, while remaining faster than SQLite's disk-backed B-Tree lookup path on this specific workload.
 
 ---
 
@@ -95,13 +96,13 @@ Write Operation:
               Flush to SSTable Segment
                   ├── data.sst    (CRC32 + KeyLen + ValLen + Key + Val)
                   ├── index.idx   (KeyLen + Offset + Key)
-                  └── filter.flt  (Bitwise Bloom Filter)
+                  └── filter.flt  (Bit-Array Bloom Filter)
 
 ```
 
 ### 1. Binary SSTable Record Framing
 
-Every physical entry within a `.sst` file is framed with explicit length headers and checksums to ensure corrupted or truncated bytes are caught immediately at initialization:
+Every physical entry within a `.sst` file is framed with explicit length headers and checksums to catch data corruption and boundary misalignments:
 
 ```text
 +----------------+----------------+----------------+--------------------+--------------------+
@@ -111,26 +112,27 @@ Every physical entry within a `.sst` file is framed with explicit length headers
 
 ```
 
-* **CRC32:** Computed over `Key Bytes + Value Bytes`. Mismatches raise `CorruptedSSTableError`.
-* **Sparse Index (`.idx`):** Serializes pairs of `(Key, File_Offset)` to allow binary search over block anchors without parsing record payloads.
+* **CRC-32:** Computed over `Key Bytes + Value Bytes`. Checksum mismatches raise `CorruptedSSTableError`.
+* **Sparse Index (`.idx`):** Serializes pairs of `(Key, File_Offset)` to enable binary-search lookups over record boundaries without parsing full record payloads. Structural alignment checks verify offset and key boundaries at load time.
 
-### 2. Bloom Filter Mathematical Optimization
+### 2. Bloom Filter Sizing & False-Positive Rate
 
-For a given SSTable containing $n$ elements with a target false-positive probability $p = 0.01$ (1%):
+For an SSTable containing $n$ elements with a target false-positive probability $p = 0.01$ (1%):
 
 $$\text{Bit Array Size: } m = -\frac{n \ln p}{(\ln 2)^2} \approx 9.58 \times n \text{ bits}$$
 
 $$\text{Optimal Hash Functions: } k = \frac{m}{n} \ln 2 \approx 7 \text{ hashes}$$
 
-Absent keys are rejected in $O(k)$ bitwise bit checks, preventing disk seeks to `.sst` files.
+Because the Bloom filter is probabilistic, false positives ($p \approx 0.01$) will occasionally trigger an SSTable lookup for an absent key, but definitely absent keys are rejected in $O(k)$ bitwise operations without disk access.
 
 ### 3. Atomic Manifest Protocol & State Transitions
 
-Engine state is governed by `manifest.json`. During flushes and compaction:
+Engine state is tracked in `manifest.json`. During flushes and compaction:
 
-1. Active file sequences and valid SSTable manifests are staged to a temporary file (`manifest.json.tmp`).
-2. The file is swapped atomically using `os.replace` to prevent mid-operation corruptions.
+1. Active file sequences and valid SSTable lists are staged to a temporary file (`manifest.json.tmp`).
+2. The manifest is updated using `os.replace` for atomic file-replacement semantics on POSIX and Windows filesystems.
 3. If an existing directory contains `.sst` files but is missing a valid `manifest.json`, StrataKV fails fast with `CorruptedManifestError` rather than silently clearing existing data.
+4. Note: Directory metadata persistence remains subject to host operating-system filesystem guarantees (Windows NTFS does not expose a directory-level `fsync` equivalent).
 
 ---
 
@@ -146,7 +148,7 @@ cd StrataKV
 # 2. Set up virtual environment
 python -m venv venv
 
-# Windows:
+# Windows (PowerShell):
 .\venv\Scripts\activate
 # Linux/macOS:
 source venv/bin/activate
@@ -162,7 +164,7 @@ pip install -r requirements.txt
 
 ### 1. Run Complete Automated Test Suite
 
-StrataKV includes 15 automated `pytest` tests validating input validation, recovery invariants, manifest schema boundaries, index offsets, and end-to-end API lifecycle:
+StrataKV includes 15 automated `pytest` tests validating SkipList parameter bounds, Bloom filter sizing, monotonic sequence ordering, manifest schema validation, index offset alignment, crash recovery invariants, and end-to-end API operations:
 
 ```bash
 pytest -v
@@ -191,9 +193,11 @@ test_recovery_invariants.py::test_malformed_manifest_raises_corrupted_manifest_e
 test_recovery_invariants.py::test_sstable_reader_rejects_invalid_utf8_value_payload PASSED [ 93%]
 test_recovery_invariants.py::test_sstable_reader_rejects_implausibly_large_record_lengths PASSED [100%]
 
-============================== 15 passed in 1.48s ==============================
+======================== 15 passed, 1 warning in 1.48s =========================
 
 ```
+
+*(Note: The warning is an upstream deprecation notice between FastAPI TestClient and HTTPX).*
 
 ### 2. Inspect Verified Telemetry & Dashboard
 
@@ -229,8 +233,12 @@ Interactive OpenAPI docs will be available at `http://localhost:8000/docs`.
 # Build Docker image
 docker build -t stratakv:latest .
 
-# Run containerized microservice
-docker run -p 8000:8000 -v $(pwd)/data_store:/app/data_store stratakv:latest
+# Run containerized microservice:
+# On Linux / macOS (Bash):
+docker run -p 8000:8000 -v "$(pwd)/data_store:/app/data_store" stratakv:latest
+
+# On Windows (PowerShell):
+docker run -p 8000:8000 -v "${PWD}/data_store:/app/data_store" stratakv:latest
 
 ```
 
@@ -246,7 +254,7 @@ StrataKV/
 │   └── models.py                   # Pydantic v2 validation schemas
 ├── engine/
 │   ├── __init__.py
-│   ├── bloom_filter.py             # Bitwise Bloom filter with optimal hash scaling
+│   ├── bloom_filter.py             # Bit-array Bloom filter with optimal hash scaling
 │   ├── lsm_tree.py                 # Core storage engine coordinator & compaction
 │   ├── skip_list.py                # Probabilistic SkipList memtable
 │   ├── sstable.py                  # Binary SSTable reader/writer with CRC32
@@ -258,7 +266,7 @@ StrataKV/
 ├── benchmark.py                    # 5-run statistical comparative benchmark harness
 ├── benchmark_results.json          # Committed empirical telemetry & sampled latency
 ├── benchmark_dashboard.png         # Synchronized 4-panel evaluation dashboard
-├── Dockerfile                      # Production containerization specification
+├── Dockerfile                      # Container specification for reproducible deployment
 ├── requirements.txt                # Pinned dependencies
 └── README.md
 
@@ -268,7 +276,7 @@ StrataKV/
 
 ## ⚠️ Scope & Non-Goals
 
-StrataKV is an educational storage engine designed to explore Log-Structured Merge-tree mechanics, disk serialization, and crash-recovery trade-offs. The following are deliberate non-goals:
+StrataKV is an educational storage engine designed to explore Log-Structured Merge-tree mechanics, binary serialization, and crash-recovery trade-offs. The following are deliberate non-goals:
 
 * **No Distributed Consensus:** Single-node embedded architecture (no Raft/Paxos).
 * **No Multi-Version Concurrency Control (MVCC):** Concurrency is governed at the process level without multi-version snapshot isolation.
@@ -280,3 +288,4 @@ StrataKV is an educational storage engine designed to explore Log-Structured Mer
 ## 🪪 License
 
 Licensed under the **MIT License**.
+
