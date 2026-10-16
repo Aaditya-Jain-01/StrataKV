@@ -285,8 +285,3 @@ StrataKV is an educational storage engine designed to explore Log-Structured Mer
 ## 🪪 License
 
 Licensed under the **MIT License**.
-
-```
-
-4. **Workload-Specific Benchmark Scoping:** Reinforced that the 8.78x write advantage and 16.92x missing-key lookup ratio apply specifically to the tested 10,000-op workload and hardware environment, balancing it against SQLite's advantage in existing-key reads.
-5. **Verified Scope & Docker Terminology:** Kept Docker framed as a tool for reproducible testing and local deployment, remaining consistent with the educational scope and non-goals.
