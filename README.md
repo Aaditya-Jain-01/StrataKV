@@ -23,7 +23,7 @@ In empirical 5-run alternating benchmarks against an autocommit SQLite baseline 
 
 ## ⚙️ Features
 
-- **Append-Only Write-Ahead Log (WAL)**: Sequentially logs mutations to disk prior to MemTable insertion to support crash recovery (flushed to the operating system file buffer; full persistence across power loss remains subject to host OS synchronization policies).
+- **Append-Only Write-Ahead Log (WAL)**: Sequentially appends incoming mutations to disk prior to MemTable insertion to support crash recovery (durability is subject to host OS page-cache flushing and file synchronization policies).
 - **In-Memory SkipList MemTable**: Probabilistic $O(\log n)$ ordered key-value indexing with geometric level distribution.
 - **Binary-Framed Immutable SSTables**: Big-endian binary serialization with per-record **CRC32** payload checksum validation and explicit key/value length framing.
 - **Probabilistic Bloom Filter Segments**: Serialized bit arrays implementing optimal hash scaling ($k = \frac{m}{n} \ln 2$) that reduce unnecessary SSTable reads for absent keys, with a configured false-positive probability ($p \approx 0.01$).
@@ -87,7 +87,7 @@ The five benchmark repetitions show substantial run-to-run variability across se
 ```text
 Write Operation:
 [Client] ──> Write-Ahead Log (WAL) [append-only disk log]
-         └──> SkipList MemTable    [in-memory concurrent index]
+         └──> SkipList MemTable    [in-memory ordered index]
                   │
                   ▼ (Threshold: 64 KB)
               Flush to SSTable Segment
@@ -161,7 +161,7 @@ pip install -r requirements.txt
 
 ### 1. Run Complete Automated Test Suite
 
-StrataKV includes 15 automated `pytest` tests validating SkipList parameter bounds, Bloom filter sizing, monotonic sequence ordering, manifest schema validation, index offset alignment, crash recovery invariants, and end-to-end API operations:
+StrataKV includes 15 automated `pytest` tests across four primary hardened test suites, covering SkipList parameter bounds, Bloom filter sizing, monotonic sequence ordering, manifest schema validation, index offset alignment, crash recovery invariants, and end-to-end API operations:
 
 ```bash
 pytest -v
@@ -195,6 +195,8 @@ test_recovery_invariants.py::test_sstable_reader_rejects_implausibly_large_recor
 ```
 
 *(Note: The non-fatal warning is an upstream StarletteDeprecationWarning concerning `httpx` with `starlette.testclient`).*
+
+In addition to the automated `pytest` test suites, the repository includes standalone subsystem test scripts (`test_bloom_integrity.py`, `test_crash_*.py`, etc.) and milestone progression harnesses for manual, component-level verification.
 
 ### 2. Inspect Verified Telemetry & Dashboard
 
@@ -247,24 +249,30 @@ docker run -p 8000:8000 -v "${PWD}/data_store:/app/data_store" stratakv:latest
 StrataKV/
 ├── api/
 │   ├── __init__.py
-│   ├── main.py                     # FastAPI application endpoints & lifecycle
-│   └── models.py                   # Pydantic v2 validation schemas
+│   ├── main.py                          # FastAPI application endpoints & lifecycle
+│   └── models.py                        # Pydantic v2 validation schemas
 ├── engine/
 │   ├── __init__.py
-│   ├── bloom_filter.py             # Probabilistic Bloom filter with optimal hash scaling
-│   ├── lsm_tree.py                 # Core storage engine coordinator & compaction
-│   ├── skip_list.py                # Probabilistic SkipList memtable
-│   ├── sstable.py                  # Binary SSTable reader/writer with CRC32
-│   └── wal.py                      # Write-Ahead Log append & recovery parser
-├── test_audit_hardening.py         # Pytest suite: boundaries & sequence invariants
-├── test_recovery_invariants.py     # Pytest suite: tombstone eviction & corruption
+│   ├── bloom_filter.py                  # Probabilistic Bloom filter with optimal hash scaling
+│   ├── lsm_tree.py                      # Core storage engine coordinator & compaction
+│   ├── skip_list.py                     # Probabilistic SkipList memtable
+│   ├── sstable.py                       # Binary SSTable reader/writer with CRC32
+│   └── wal.py                           # Write-Ahead Log append & recovery parser
+├── test_audit_hardening.py              # Pytest suite: boundaries & sequence invariants
+├── test_recovery_invariants.py          # Pytest suite: tombstone eviction & corruption
 ├── test_manifest_and_index_hardening.py # Pytest suite: schema validation & offsets
-├── test_e2e.py                     # Pytest suite: full FastAPI & engine lifecycle
-├── benchmark.py                    # 5-run statistical comparative benchmark harness
-├── benchmark_results.json          # Committed empirical telemetry & sampled latency
-├── benchmark_dashboard.png         # Synchronized 4-panel evaluation dashboard
-├── Dockerfile                      # Container specification for reproducible deployment and testing
-├── requirements.txt                # Pinned dependencies
+├── test_e2e.py                          # Pytest suite: full FastAPI & engine lifecycle
+├── test_api_concurrency.py              # Subsystem verification: HTTP concurrency
+├── test_bloom_integrity.py              # Subsystem verification: Bloom filter false-positive rates
+├── test_crash_compaction.py             # Subsystem verification: interrupted compaction recovery
+├── test_crash_flush.py                  # Subsystem verification: interrupted memtable flush recovery
+├── test_data_invariants.py              # Subsystem verification: key-value write/delete invariants
+├── test_sstable_integrity.py            # Subsystem verification: SSTable binary framing & corruption
+├── benchmark.py                         # 5-run statistical comparative benchmark harness
+├── benchmark_results.json               # Committed empirical telemetry & sampled latency
+├── benchmark_dashboard.png              # Synchronized 4-panel evaluation dashboard
+├── Dockerfile                           # Container specification for reproducible deployment
+├── requirements.txt                     # Pinned dependencies
 └── README.md
 
 ```
