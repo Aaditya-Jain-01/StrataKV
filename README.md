@@ -161,7 +161,7 @@ pip install -r requirements.txt
 
 ### 1. Run Complete Automated Test Suite
 
-StrataKV includes 15 automated `pytest` tests across four primary hardened test suites, covering SkipList parameter bounds, Bloom filter sizing, monotonic sequence ordering, manifest schema validation, index offset alignment, crash recovery invariants, and end-to-end API operations:
+StrataKV includes 15 automated `pytest` test cases across four primary hardened test suites, covering SkipList parameter bounds, Bloom filter sizing, monotonic sequence ordering, manifest schema validation, index offset alignment, crash recovery invariants, and end-to-end API operations:
 
 ```bash
 pytest -v
@@ -196,7 +196,7 @@ test_recovery_invariants.py::test_sstable_reader_rejects_implausibly_large_recor
 
 *(Note: The non-fatal warning is an upstream StarletteDeprecationWarning concerning `httpx` with `starlette.testclient`).*
 
-In addition to the automated `pytest` test suites, the repository includes standalone subsystem test scripts (`test_bloom_integrity.py`, `test_crash_*.py`, etc.) and milestone progression harnesses for manual, component-level verification.
+In addition to the automated `pytest` test suites, the repository contains standalone subsystem test scripts (`test_bloom_integrity.py`, `test_crash_*.py`, etc.) and milestone progression harnesses for component-level verification.
 
 ### 2. Inspect Verified Telemetry & Dashboard
 
@@ -262,12 +262,18 @@ StrataKV/
 ├── test_recovery_invariants.py          # Pytest suite: tombstone eviction & corruption
 ├── test_manifest_and_index_hardening.py # Pytest suite: schema validation & offsets
 ├── test_e2e.py                          # Pytest suite: full FastAPI & engine lifecycle
-├── test_api_concurrency.py              # Subsystem verification: HTTP concurrency
-├── test_bloom_integrity.py              # Subsystem verification: Bloom filter false-positive rates
-├── test_crash_compaction.py             # Subsystem verification: interrupted compaction recovery
-├── test_crash_flush.py                  # Subsystem verification: interrupted memtable flush recovery
-├── test_data_invariants.py              # Subsystem verification: key-value write/delete invariants
-├── test_sstable_integrity.py            # Subsystem verification: SSTable binary framing & corruption
+├── test_api_concurrency.py              # Subsystem script: HTTP endpoint concurrency
+├── test_bloom_integrity.py              # Subsystem script: bit-array collision & sizing checks
+├── test_crash_compaction.py             # Subsystem script: interrupted compaction recovery
+├── test_crash_flush.py                  # Subsystem script: interrupted memtable flush recovery
+├── test_data_invariants.py              # Subsystem script: key-value write/delete invariants
+├── test_sstable_integrity.py            # Subsystem script: SSTable binary framing & corruption
+├── test_milestone1.py                   # Milestone harness: MemTable & SkipList verification
+├── test_milestone2.py                   # Milestone harness: WAL persistence & crash recovery
+├── test_milestone3.py                   # Milestone harness: SSTable serialization & indexing
+├── test_milestone4.py                   # Milestone harness: Bloom filter integration
+├── test_milestone5.py                   # Milestone harness: Compaction & tombstone eviction
+├── test_milestone6.py                   # Milestone harness: REST API integration
 ├── benchmark.py                         # 5-run statistical comparative benchmark harness
 ├── benchmark_results.json               # Committed empirical telemetry & sampled latency
 ├── benchmark_dashboard.png              # Synchronized 4-panel evaluation dashboard
