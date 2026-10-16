@@ -139,7 +139,7 @@ Requires **Python 3.11+**.
 
 ```bash
 # 1. Clone the repository
-git clone [https://github.com/Aaditya-Jain-01/StrataKV.git](https://github.com/Aaditya-Jain-01/StrataKV.git)
+git clone https://github.com/Aaditya-Jain-01/StrataKV.git
 cd StrataKV
 
 # 2. Set up virtual environment
