@@ -11,39 +11,38 @@ from engine.bloom_filter import BloomFilter
 TEST_DIR = "test_manifest_index_hardening_store"
 
 
+@pytest.fixture(autouse=True)
 def cleanup():
+    """Ensure clean directory state before and after every test."""
+    if os.path.exists(TEST_DIR):
+        shutil.rmtree(TEST_DIR, ignore_errors=True)
+    yield
     if os.path.exists(TEST_DIR):
         shutil.rmtree(TEST_DIR, ignore_errors=True)
 
 
-def run_tests():
-    cleanup()
-    print("-" * 65)
-    print(" STRATAKV HARDENING: MANIFEST & INDEX ALIGNMENT SUITE ")
-    print("-" * 65)
-
-    print("[TEST 1] Missing manifest in genuinely empty directory initializes cleanly...")
+def test_missing_manifest_in_empty_directory_initializes_cleanly():
+    """Verifies fresh engine initialization creates manifest in an empty store."""
     tree = LSMTree(data_dir=TEST_DIR)
     assert os.path.exists(os.path.join(TEST_DIR, "manifest.json"))
     assert len(tree.sstables) == 0
     tree.close()
-    print("  Clean fresh directory initialization confirmed.")
 
-    print("\n[TEST 2] Missing manifest with existing SSTables raises CorruptedManifestError...")
+
+def test_missing_manifest_with_existing_sstables_raises_corrupted_manifest_error():
+    """Verifies non-empty directory missing manifest fails fast instead of wiping data."""
     tree = LSMTree(data_dir=TEST_DIR)
     tree.put("key:101", "val_101")
     tree.flush()
     tree.close()
 
     os.remove(os.path.join(TEST_DIR, "manifest.json"))
-    try:
+    with pytest.raises(CorruptedManifestError):
         LSMTree(data_dir=TEST_DIR)
-        assert False, "Engine silently treated non-empty store as fresh, ignoring existing data"
-    except CorruptedManifestError:
-        print("  Missing manifest in non-empty directory caught cleanly.")
 
-    print("\n[TEST 3] Manifest schema validation tests...")
-    cleanup()
+
+def test_manifest_schema_validation():
+    """Verifies schema validation rejects invalid versions, sequences, and traversal paths."""
     os.makedirs(TEST_DIR, exist_ok=True)
     manifest_file = os.path.join(TEST_DIR, "manifest.json")
 
@@ -52,21 +51,18 @@ def run_tests():
         {"version": 1, "next_seq": -5, "sstables": []},
         {"version": 1, "next_seq": 1, "sstables": ["../escape"]},
         {"version": 1, "next_seq": 1, "sstables": ["sub/folder"]},
-        {"version": 1, "next_seq": 1, "sstables": ["dup_table", "dup_table"]}
+        {"version": 1, "next_seq": 1, "sstables": ["dup_table", "dup_table"]},
     ]
 
     for bad in bad_schemas:
         with open(manifest_file, "w", encoding="utf-8") as f:
             json.dump(bad, f)
-        try:
+        with pytest.raises(CorruptedManifestError):
             LSMTree(data_dir=TEST_DIR)
-            assert False, f"Accepted invalid manifest schema: {bad}"
-        except CorruptedManifestError:
-            pass
-    print("  All schema violations (versions, traversal, duplicates) rejected.")
 
-    print("\n[TEST 4] SSTable index offset pointing to wrong key raises CorruptedSSTableError...")
-    cleanup()
+
+def test_sstable_index_offset_pointing_to_wrong_key_raises_corrupted_sstable_error():
+    """Verifies index referencing a misaligned or mismatched key raises CorruptedSSTableError."""
     os.makedirs(TEST_DIR, exist_ok=True)
     sst_path = os.path.join(TEST_DIR, "test_misalign.sst")
     idx_path = os.path.join(TEST_DIR, "test_misalign.idx")
@@ -82,24 +78,32 @@ def run_tests():
     with open(idx_path, "wb") as f_idx:
         f_idx.write(struct.pack("!IQ", len(k_claimed), 0) + k_claimed)
 
-    try:
+    with pytest.raises(CorruptedSSTableError):
         SSTableReader(sst_path, idx_path)
-        assert False, "Reader accepted index referencing an unaligned/mismatched key"
-    except CorruptedSSTableError:
-        print("  Index misalignment caught at load time via CorruptedSSTableError.")
 
-    print("\n[TEST 5] SSTable index offset pointing to middle of record...")
+
+def test_sstable_index_offset_pointing_to_middle_of_record():
+    """Verifies index offset pointing into record payload body raises CorruptedSSTableError."""
+    os.makedirs(TEST_DIR, exist_ok=True)
+    sst_path = os.path.join(TEST_DIR, "test_mid_record.sst")
+    idx_path = os.path.join(TEST_DIR, "test_mid_record.idx")
+
+    k_actual = b"actual_key"
+    v_actual = b"actual_val"
+    payload = k_actual + v_actual
+    header = struct.pack("!III", zlib.crc32(payload), len(k_actual), len(v_actual))
+    with open(sst_path, "wb") as f_sst:
+        f_sst.write(header + payload)
+
     with open(idx_path, "wb") as f_idx:
         f_idx.write(struct.pack("!IQ", len(k_actual), 5) + k_actual)
 
-    try:
+    with pytest.raises(CorruptedSSTableError):
         SSTableReader(sst_path, idx_path)
-        assert False, "Reader accepted offset landing inside record body"
-    except CorruptedSSTableError:
-        print("  Index offset landing in record body caught at load time.")
 
-    print("\n[TEST 6] Verifying sequence numbers >= 1,000,000 pass schema validation...")
-    cleanup()
+
+def test_sequence_numbers_ge_1000000_pass_schema_validation():
+    """Verifies sequence numbers >= 1,000,000 load and validate cleanly."""
     os.makedirs(TEST_DIR, exist_ok=True)
     manifest_file = os.path.join(TEST_DIR, "manifest.json")
 
@@ -125,13 +129,8 @@ def run_tests():
     assert len(tree.sstables) == 2
     assert tree.next_file_seq == 1000001
     tree.close()
-    print("  Sequence numbers >= 1,000,000 loaded cleanly.")
-
-    cleanup()
-    print("-" * 65)
-    print(" [STATUS] ALL MANIFEST & INDEX HARDENING ASSERTIONS PASSED ")
-    print("-" * 65)
 
 
 if __name__ == "__main__":
-    run_tests()
+    import sys
+    sys.exit(pytest.main([__file__, "-v"]))

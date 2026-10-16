@@ -9,18 +9,18 @@ from engine.sstable import SSTableWriter, SSTableReader, CorruptedSSTableError
 TEST_DIR = "test_recovery_invariants_store"
 
 
+@pytest.fixture(autouse=True)
 def cleanup():
+    """Ensure clean directory state before and after every test."""
+    if os.path.exists(TEST_DIR):
+        shutil.rmtree(TEST_DIR, ignore_errors=True)
+    yield
     if os.path.exists(TEST_DIR):
         shutil.rmtree(TEST_DIR, ignore_errors=True)
 
 
-def run_tests():
-    cleanup()
-    print("-" * 65)
-    print(" STRATAKV AUDIT: RECOVERY SAFETY & INVARIANT REGRESSION TESTS ")
-    print("-" * 65)
-
-    print("[TEST 1] Verifying no deleted-record resurrection across compaction & restart...")
+def test_no_deleted_record_resurrection_across_compaction_and_restart():
+    """Verifies tombstone compaction drops deleted keys permanently across restarts."""
     tree = LSMTree(data_dir=TEST_DIR, memtable_threshold_bytes=64 * 1024)
     tree.put("user:target", "initial_active_value")
     tree.flush()
@@ -37,24 +37,24 @@ def run_tests():
     reopened = LSMTree(data_dir=TEST_DIR, memtable_threshold_bytes=64 * 1024)
     assert reopened.get("user:target") is None, "Deleted record was resurrected after clean restart"
     reopened.close()
-    print("  Tombstone compaction verified: key remains completely absent across restarts.")
 
-    print("\n[TEST 2] Verifying malformed manifest raises CorruptedManifestError (no silent fallback)...")
+
+def test_malformed_manifest_raises_corrupted_manifest_error():
+    """Verifies unparseable JSON manifest fails fast via CorruptedManifestError."""
+    os.makedirs(TEST_DIR, exist_ok=True)
     manifest_path = os.path.join(TEST_DIR, "manifest.json")
     with open(manifest_path, "w", encoding="utf-8") as f:
         f.write("{ INVALID_JSON_BYTES_NOT_PARSED")
 
-    try:
+    with pytest.raises(CorruptedManifestError):
         LSMTree(data_dir=TEST_DIR)
-        assert False, "Engine silently fell back to discovery on malformed manifest"
-    except CorruptedManifestError:
-        print("  Malformed manifest failed fast via CorruptedManifestError.")
 
-    print("\n[TEST 3] Verifying SSTable reader rejects invalid UTF-8 value payloads...")
-    cleanup()
+
+def test_sstable_reader_rejects_invalid_utf8_value_payload():
+    """Verifies non-UTF8 value payloads are caught and wrapped in CorruptedSSTableError."""
+    os.makedirs(TEST_DIR, exist_ok=True)
     sst_file = os.path.join(TEST_DIR, "test_utf8.sst")
     idx_file = os.path.join(TEST_DIR, "test_utf8.idx")
-    os.makedirs(TEST_DIR, exist_ok=True)
 
     items = [("valid_key", "valid_value")]
     SSTableWriter.write(sst_file, idx_file, iter(items))
@@ -68,13 +68,13 @@ def run_tests():
         f.write(header + payload)
 
     reader = SSTableReader(sst_file, idx_file)
-    try:
+    with pytest.raises(CorruptedSSTableError):
         reader.get("valid_key")
-        assert False, "Reader failed to raise on non-UTF8 value"
-    except CorruptedSSTableError:
-        print("  Non-UTF8 value caught and wrapped in CorruptedSSTableError.")
 
-    print("\n[TEST 4] Verifying SSTable reader rejects implausibly large record lengths during index check...")
+
+def test_sstable_reader_rejects_implausibly_large_record_lengths():
+    """Verifies SSTableReader rejects implausible record lengths during index check."""
+    os.makedirs(TEST_DIR, exist_ok=True)
     sst_len_file = os.path.join(TEST_DIR, "test_len.sst")
     idx_len_file = os.path.join(TEST_DIR, "test_len.idx")
 
@@ -85,17 +85,10 @@ def run_tests():
     with open(sst_len_file, "wb") as f:
         f.write(struct.pack("!III", 12345, 500 * 1024 * 1024, 10))
 
-    try:
+    with pytest.raises(CorruptedSSTableError):
         SSTableReader(sst_len_file, idx_len_file)
-        assert False, "SSTableReader accepted implausible record length in header"
-    except CorruptedSSTableError:
-        print("  Implausibly large record length rejected during index alignment check at initialization.")
-
-    cleanup()
-    print("-" * 65)
-    print(" [STATUS] ALL RECOVERY INVARIANT TESTS PASSED CLEANLY")
-    print("-" * 65)
 
 
 if __name__ == "__main__":
-    run_tests()
+    import sys
+    sys.exit(pytest.main([__file__, "-v"]))
