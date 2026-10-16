@@ -17,7 +17,7 @@
 
 To offset the read penalty inherent to multi-segment LSM structures, StrataKV pairs each on-disk Sorted String Table (SSTable) with an in-memory sparse key index and a probabilistic bit-array Bloom filter to reduce unnecessary disk reads for absent keys.
 
-In empirical 5-run alternating benchmarks against an autocommit SQLite baseline (`journal_mode=DELETE`, `synchronous=FULL`, 10,000 operations per stage), StrataKV achieved an **8.78x write throughput advantage** (1,699.9 vs. 193.6 ops/sec) and a **16.92x throughput ratio on compacted missing-key lookups** (368,184.4 vs. 21,759.6 ops/sec) under the tested benchmark configuration, reducing P99 tail latency on absent keys from 0.180 ms to 0.008 ms (**22.50x lower tail latency**). Conversely, SQLite demonstrated higher throughput on point reads of existing keys (18,406.1 vs. 12,362.9 ops/sec), illustrating the core trade-off between LSM write-append throughput and B-Tree point-read locality.
+In empirical 5-run alternating benchmarks against an autocommit SQLite baseline (`journal_mode=DELETE`, `synchronous=FULL`, 10,000 operations per stage), StrataKV achieved an **8.78x write throughput advantage** (1,699.9 vs. 193.6 ops/sec) and a **16.92x throughput ratio on compacted missing-key lookups** (368,184.4 vs. 21,759.6 ops/sec) on the tested environment and workload, reducing P99 tail latency on absent keys from 0.180 ms to 0.008 ms (**22.50x lower tail latency**). Conversely, SQLite demonstrated higher throughput on point reads of existing keys (18,406.1 vs. 12,362.9 ops/sec), illustrating the fundamental trade-off between LSM write-append throughput and B-Tree point-read locality.
 
 ---
 
@@ -26,10 +26,10 @@ In empirical 5-run alternating benchmarks against an autocommit SQLite baseline 
 - **Sequential Append-Only Write-Ahead Log (WAL)**: Unbuffered append-only write persistence for crash recovery prior to MemTable insertion.
 - **In-Memory SkipList MemTable**: Probabilistic $O(\log n)$ ordered key-value indexing with geometric level distribution.
 - **Binary-Framed Immutable SSTables**: Big-endian binary serialization with per-record **CRC32** payload checksum validation and explicit key/value length framing.
-- **Probabilistic Bloom Filter Segments**: Serialized bit arrays implementing optimal hash scaling ($k = \frac{m}{n} \ln 2$) that reject definitely absent keys, reducing unnecessary disk lookups while accounting for a controlled false-positive probability ($p \approx 0.01$).
+- **Probabilistic Bloom Filter Segments**: Serialized bit arrays implementing optimal hash scaling ($k = \frac{m}{n} \ln 2$) that reduce unnecessary SSTable reads for absent keys, with a configured false-positive probability ($p \approx 0.01$).
 - **Sparse Offset Indexing**: Monotonically ordered physical file offset pointers enabling binary search over block boundaries without scanning record bodies.
 - **Tombstone Eviction & Compaction**: Merges multi-SST runs into single consolidated segments, evicting deleted keys and superseded revisions.
-- **Atomic Manifest Protocol**: State transitions recorded via atomic file replacement (`os.replace`) with fail-fast validation (`CorruptedManifestError`, `MissingSSTableError`) preventing silent data loss across restarts.
+- **Atomic Manifest Protocol**: State transitions recorded via atomic file replacement (`os.replace`) with fail-fast validation (`CorruptedManifestError`, `MissingSSTableError`) to enforce tested recovery invariants across restarts.
 - **Containerized REST Microservice**: Asynchronous FastAPI endpoints with Pydantic v2 validation, containerized with Docker for reproducible deployment and testing.
 
 ---
@@ -120,16 +120,16 @@ $$\text{Bit Array Size: } m = -\frac{n \ln p}{(\ln 2)^2} \approx 9.58 \times n \
 
 $$\text{Optimal Hash Functions: } k = \frac{m}{n} \ln 2 \approx 7 \text{ hashes}$$
 
-Because the Bloom filter is probabilistic, false positives ($p \approx 0.01$) will occasionally trigger an SSTable lookup for an absent key. However, definitely absent keys are rejected in $O(k)$ bitwise operations without incurring physical disk I/O.
+Because the Bloom filter is probabilistic, false positives ($p \approx 0.01$) will still trigger an SSTable lookup for an absent key. For negative queries where hash probes evaluate to zero, the filter prunes the lookup path early, reducing unnecessary SSTable index and disk reads.
 
 ### 3. Atomic Manifest Protocol & Recovery Invariants
 
 Engine state is tracked in `manifest.json`. During flushes and compaction:
 
 1. Active file sequences and valid SSTable lists are staged to a temporary file (`manifest.json.tmp`).
-2. The manifest is updated using `os.replace` for atomic file replacement semantics on POSIX and Windows filesystems, preventing mid-operation torn states.
+2. The manifest is updated using `os.replace` to atomically swap the file on POSIX and Windows filesystems, preventing partial writes during metadata updates.
 3. If an existing directory contains `.sst` files but is missing a valid `manifest.json`, StrataKV fails fast with `CorruptedManifestError` rather than silently treating the store as empty.
-4. Note: Directory metadata persistence remains subject to host operating-system filesystem guarantees (Windows NTFS does not expose a directory-level `fsync` equivalent).
+4. Note: While `os.replace` provides atomic replacement semantics, full crash durability across power-loss boundaries also depends on host OS write-back caching and filesystem guarantees (Windows NTFS does not expose a directory-level `fsync` equivalent).
 
 ---
 
@@ -286,7 +286,7 @@ StrataKV is an educational storage engine designed to explore Log-Structured Mer
 
 Licensed under the **MIT License**.
 
-
-<FollowUp label="Want to draft the LinkedIn launch post based on this finalized README?" query="Draft a professional LinkedIn post announcing the StrataKV project, emphasizing systems trade-offs and empirical benchmarks."/>
-
 ```
+
+4. **Workload-Specific Benchmark Scoping:** Reinforced that the 8.78x write advantage and 16.92x missing-key lookup ratio apply specifically to the tested 10,000-op workload and hardware environment, balancing it against SQLite's advantage in existing-key reads.
+5. **Verified Scope & Docker Terminology:** Kept Docker framed as a tool for reproducible testing and local deployment, remaining consistent with the educational scope and non-goals.
