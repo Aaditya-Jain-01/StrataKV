@@ -274,7 +274,7 @@ def run_benchmark() -> None:
             "sqlite_version": sqlite3.sqlite_version,
             "sqlite_journal_mode": sqlite_journal_mode,
             "sqlite_synchronous": sqlite_sync_setting,
-            "sqlite_transaction_model": "Autocommit per insert (commit on every write matching WAL fsync)",
+            "sqlite_transaction_model": "SQLite rollback-journal mode (DELETE), synchronous=FULL, one committed insert per operation; StrataKV synchronizes its WAL on each write",
             "numpy_version": np.__version__,
             "matplotlib_version": matplotlib.__version__,
             "num_operations": NUM_OPERATIONS,

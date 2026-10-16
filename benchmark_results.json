@@ -6,7 +6,7 @@
     "sqlite_version": "3.45.3",
     "sqlite_journal_mode": "DELETE",
     "sqlite_synchronous": 2,
-    "sqlite_transaction_model": "Autocommit per insert (commit on every write matching WAL fsync)",
+    "sqlite_transaction_model": "SQLite rollback-journal mode (DELETE), synchronous=FULL, one committed insert per operation; StrataKV synchronizes its WAL on each write",
     "numpy_version": "2.5.4",
     "matplotlib_version": "3.11.2",
     "num_operations": 10000,
