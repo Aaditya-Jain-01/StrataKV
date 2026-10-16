@@ -23,7 +23,7 @@ In empirical 5-run alternating benchmarks against an autocommit SQLite baseline 
 
 ## ⚙️ Features
 
-- **Append-Only Write-Ahead Log (WAL)**: Sequentially appends incoming mutations to disk prior to MemTable insertion to support crash recovery (durability is subject to host OS page-cache flushing and file synchronization policies).
+- **Append-Only Write-Ahead Log (WAL)**: Sequentially logs mutations to disk prior to MemTable insertion to support crash recovery (flushed to the operating system file buffer; full persistence across power loss remains subject to host OS synchronization policies).
 - **In-Memory SkipList MemTable**: Probabilistic $O(\log n)$ ordered key-value indexing with geometric level distribution.
 - **Binary-Framed Immutable SSTables**: Big-endian binary serialization with per-record **CRC32** payload checksum validation and explicit key/value length framing.
 - **Probabilistic Bloom Filter Segments**: Serialized bit arrays implementing optimal hash scaling ($k = \frac{m}{n} \ln 2$) that reduce unnecessary SSTable reads for absent keys, with a configured false-positive probability ($p \approx 0.01$).
