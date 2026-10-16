@@ -15,7 +15,7 @@
 
 **StrataKV** is an educational embedded Key-Value storage engine and asynchronous HTTP microservice built from scratch in Python, implementing an immutable **Log-Structured Merge-tree (LSM-tree)** architecture. Traditional in-place update storage engines (such as B-Trees) incur random I/O amplification under write-heavy workloads due to leaf-page dirtying and disk rewrites. StrataKV mitigates write amplification by converting incoming mutations into sequential disk appends through an append-only Write-Ahead Log (WAL) and an in-memory SkipList MemTable, deferring sorting and deduplication to background compaction.
 
-To offset the read penalty inherent to multi-segment LSM structures, StrataKV pairs each on-disk Sorted String Table (SSTable) with an in-memory sparse key index and a probabilistic bit-array Bloom filter to prune unnecessary disk reads for absent keys.
+To offset the read penalty inherent to multi-segment LSM structures, StrataKV pairs each on-disk Sorted String Table (SSTable) with an in-memory sparse key index and a probabilistic bit-array Bloom filter to reduce unnecessary disk reads for absent keys.
 
 In empirical 5-run alternating benchmarks against an autocommit SQLite baseline (`journal_mode=DELETE`, `synchronous=FULL`, 10,000 operations per stage), StrataKV achieved an **8.78x write throughput advantage** (1,699.9 vs. 193.6 ops/sec) and a **16.92x throughput ratio on compacted missing-key lookups** (368,184.4 vs. 21,759.6 ops/sec) on the tested environment, reducing P99 tail latency on absent keys from 0.180 ms to 0.008 ms (**22.50x lower tail latency**). Conversely, SQLite demonstrated higher throughput on point reads of existing keys (18,406.1 vs. 12,362.9 ops/sec), illustrating the core trade-off between LSM write-append throughput and B-Tree point-read locality.
 
@@ -194,7 +194,7 @@ test_recovery_invariants.py::test_sstable_reader_rejects_implausibly_large_recor
 
 ```
 
-*Note: The warning is an upstream StarletteDeprecationWarning concerning `httpx` with `starlette.testclient`.*
+*(Note: The non-fatal warning is an upstream deprecation notice between FastAPI TestClient and HTTPX).*
 
 ### 2. Inspect Verified Telemetry & Dashboard
 
@@ -286,3 +286,6 @@ StrataKV is an educational storage engine designed to explore Log-Structured Mer
 
 Licensed under the **MIT License**.
 
+
+
+---
