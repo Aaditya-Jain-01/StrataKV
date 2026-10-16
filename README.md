@@ -5,7 +5,7 @@
 ![FastAPI](https://img.shields.io/badge/FastAPI-Microservice-009688)
 ![Docker](https://img.shields.io/badge/Docker-Containerized-2496ED)
 ![Tests](https://img.shields.io/badge/tests-15%20passed-brightgreen)
-![Benchmark](https://img.shields.io/badge/Benchmark-16.92x%20Missing--Key%20Ratio-purple)
+![Benchmark](https://img.shields.io/badge/Benchmark-16.92x%20Compacted%20Missing--Key%20Throughput-purple)
 ![GitHub stars](https://img.shields.io/github/stars/Aaditya-Jain-01/StrataKV?style=social)
 ![GitHub forks](https://img.shields.io/github/forks/Aaditya-Jain-01/StrataKV?style=social)
 
@@ -23,7 +23,7 @@ In empirical 5-run alternating benchmarks against an autocommit SQLite baseline 
 
 ## ⚙️ Features
 
-- **Sequential Append-Only Write-Ahead Log (WAL)**: Unbuffered append-only write persistence for crash recovery prior to MemTable insertion.
+- **Append-Only Write-Ahead Log (WAL)**: Appends incoming mutations sequentially to disk prior to MemTable insertion to support crash recovery (governed by OS buffer flushing and write policies).
 - **In-Memory SkipList MemTable**: Probabilistic $O(\log n)$ ordered key-value indexing with geometric level distribution.
 - **Binary-Framed Immutable SSTables**: Big-endian binary serialization with per-record **CRC32** payload checksum validation and explicit key/value length framing.
 - **Probabilistic Bloom Filter Segments**: Serialized bit arrays implementing optimal hash scaling ($k = \frac{m}{n} \ln 2$) that reduce unnecessary SSTable reads for absent keys, with a configured false-positive probability ($p \approx 0.01$).
@@ -86,7 +86,7 @@ The five benchmark repetitions show substantial run-to-run variability across se
 
 ```text
 Write Operation:
-[Client] ──> Write-Ahead Log (WAL) [append-only disk I/O]
+[Client] ──> Write-Ahead Log (WAL) [append-only disk log]
          └──> SkipList MemTable    [in-memory concurrent index]
                   │
                   ▼ (Threshold: 64 KB)
