@@ -23,7 +23,7 @@ In empirical 5-run alternating benchmarks against an autocommit SQLite baseline 
 
 ## ⚙️ Features
 
-- **Append-Only Write-Ahead Log (WAL)**: Appends incoming mutations sequentially to disk prior to MemTable insertion to support crash recovery (governed by OS buffer flushing and write policies).
+- **Append-Only Write-Ahead Log (WAL)**: Sequentially appends incoming mutations to disk prior to MemTable insertion to support crash recovery (durability is subject to host OS page-cache flushing and file synchronization policies).
 - **In-Memory SkipList MemTable**: Probabilistic $O(\log n)$ ordered key-value indexing with geometric level distribution.
 - **Binary-Framed Immutable SSTables**: Big-endian binary serialization with per-record **CRC32** payload checksum validation and explicit key/value length framing.
 - **Probabilistic Bloom Filter Segments**: Serialized bit arrays implementing optimal hash scaling ($k = \frac{m}{n} \ln 2$) that reduce unnecessary SSTable reads for absent keys, with a configured false-positive probability ($p \approx 0.01$).
@@ -138,11 +138,11 @@ Engine state is tracked in `manifest.json`. During flushes and compaction:
 Requires **Python 3.11+**.
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/Aaditya-Jain-01/StrataKV.git
+# Clone the repository
+git clone [https://github.com/Aaditya-Jain-01/StrataKV.git](https://github.com/Aaditya-Jain-01/StrataKV.git)
 cd StrataKV
 
-# 2. Set up virtual environment
+# Set up virtual environment
 python -m venv venv
 
 # Windows (PowerShell):
@@ -150,7 +150,7 @@ python -m venv venv
 # Linux/macOS:
 source venv/bin/activate
 
-# 3. Install dependencies
+# Install dependencies
 pip install -r requirements.txt
 
 ```
