@@ -161,7 +161,7 @@ pip install -r requirements.txt
 
 ### 1. Run Complete Automated Test Suite
 
-StrataKV includes 15 automated `pytest` test cases across four primary hardened test suites, covering SkipList parameter bounds, Bloom filter sizing, monotonic sequence ordering, manifest schema validation, index offset alignment, crash recovery invariants, and end-to-end API operations:
+StrataKV's automated test discovery natively discovers and runs 15 unit, boundary, recovery, and integration tests across the 4 primary hardened test suites:
 
 ```bash
 pytest -v
